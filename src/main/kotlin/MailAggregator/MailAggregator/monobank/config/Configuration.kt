@@ -1,4 +1,4 @@
-package MailAggregator.MailAggregator.config
+package MailAggregator.MailAggregator.monobank.config
 
 import MailAggregator.MailAggregator.monobank.api.MonobankApi
 import MailAggregator.MailAggregator.monobank.repository.TransactionRepository
