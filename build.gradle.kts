@@ -48,7 +48,10 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-data-jpa")
     implementation("com.vladmihalcea:hibernate-types-60:2.21.1") // для jsonb
 
-
+    // Google authentication
+    implementation("com.google.api-client:google-api-client:2.6.0")
+    implementation("com.google.apis:google-api-services-sheets:v4-rev20250106-2.0.0")
+    implementation("com.google.auth:google-auth-library-oauth2-http:1.23.0")
 
     // Spring Boot Test
     testImplementation("org.springframework.boot:spring-boot-starter-test") {
