@@ -2,6 +2,7 @@ package MailAggregator.MailAggregator.monobank.repository
 
 import MailAggregator.MailAggregator.monobank.api.MonoApiTransaction
 import MailAggregator.MailAggregator.monobank.application.MonoTransaction
+import MailAggregator.MailAggregator.monobank.application.TransactionStatus
 import MailAggregator.MailAggregator.monobank.repository.jpa.TransactionJpaEntity
 import MailAggregator.MailAggregator.monobank.repository.jpa.TransactionJpaRepository
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
@@ -22,7 +23,7 @@ class TransactionRepository(
                 TransactionJpaEntity(
                     it.id,
                     it.createdAt,
-                    objectMapper.valueToTree(it.raw)
+                    objectMapper.valueToTree(it.raw),
                 )
             }
         )
@@ -32,16 +33,25 @@ class TransactionRepository(
         MonoTransaction(
             id = it.id,
             createdAt = it.createdAt,
-            raw = objectMapper.treeToValue(it.raw, MonoApiTransaction::class.java)
+            raw = objectMapper.treeToValue(it.raw, MonoApiTransaction::class.java),
         )
     }
 
-    fun get(transactionId: UUID) = transactionJpaRepository.findById(transactionId).map {
+    fun get(transactionId: String) = transactionJpaRepository.findById(transactionId).map {
         MonoTransaction(
             id = it.id,
             createdAt = it.createdAt,
-            raw = objectMapper.treeToValue(it.raw, MonoApiTransaction::class.java)
+            raw = objectMapper.treeToValue(it.raw, MonoApiTransaction::class.java),
         )
     }
 
+    fun existsById(transactionId: String) = transactionJpaRepository.existsById(transactionId)
+
+    fun findAllById(transactionIds: List<String>) = transactionJpaRepository.findAllById(transactionIds).map { it ->
+        MonoTransaction(
+            id = it.id,
+            createdAt = it.createdAt,
+            raw = objectMapper.treeToValue(it.raw, MonoApiTransaction::class.java),
+        )
+    }
 }
