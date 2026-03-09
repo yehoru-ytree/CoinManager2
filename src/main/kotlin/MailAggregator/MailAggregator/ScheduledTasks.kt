@@ -1,6 +1,7 @@
 package MailAggregator.MailAggregator
 
 import MailAggregator.MailAggregator.monobank.api.MonobankApi
+import MailAggregator.MailAggregator.spreadsheet.usecases.ProcessIncomingMonobankTransactionsUseCase
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import org.springframework.scheduling.annotation.Scheduled
@@ -10,15 +11,11 @@ import java.text.SimpleDateFormat
 
 @Component
 class ScheduledTasks(
-    val monoBankApi: MonobankApi
+    val processIncomingMonobankTransactionsUseCase: ProcessIncomingMonobankTransactionsUseCase
 )  {
 
-    val log: Logger = LoggerFactory.getLogger(ScheduledTasks::class.java)
-
-    val dateFormat: SimpleDateFormat = SimpleDateFormat("HH:mm:ss")
-
-    //@Scheduled(fixedRate = 60000)
-    fun reportCurrentTime() {
-        log.info(monoBankApi.getClientInfo().toString())
+    @Scheduled(fixedDelayString = "PT5M")
+    fun scheduledTask(){
+        processIncomingMonobankTransactionsUseCase()
     }
 }

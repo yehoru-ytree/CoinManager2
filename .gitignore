@@ -22,6 +22,7 @@ target/
 *.ipr
 .gradle
 /.gradle
+**/.gradle/
 
 ### NetBeans ###
 /nbproject/private/

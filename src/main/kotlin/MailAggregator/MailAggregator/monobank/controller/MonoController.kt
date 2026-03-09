@@ -47,11 +47,6 @@ class MonoController(
         return monobankApi.getStatements(accId, fromInstant, toInstant)
     }
 
-    //@PostConstruct
-    fun test(){
-        ingest("5njU6znBYZ3Oxg0tQcB2og", null, null, 24)
-    }
-
     @PostMapping("/ingest")
     @Transactional
     fun ingest(
