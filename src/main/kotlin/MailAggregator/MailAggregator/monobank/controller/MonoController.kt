@@ -3,21 +3,16 @@ package MailAggregator.MailAggregator.monobank.controller
 import MailAggregator.MailAggregator.monobank.api.MonobankApi
 import MailAggregator.MailAggregator.monobank.application.MonoTransaction
 import MailAggregator.MailAggregator.monobank.repository.TransactionRepository
-import MailAggregator.MailAggregator.monobank.repository.jpa.TransactionJpaEntity
-import MailAggregator.MailAggregator.monobank.repository.jpa.TransactionJpaRepository
-import com.fasterxml.jackson.databind.JsonNode
-import org.springframework.http.ResponseEntity
+import jakarta.annotation.PostConstruct
 import org.springframework.web.bind.annotation.*
 import java.time.Instant
-import java.util.*
-import org.springframework.data.domain.PageRequest
 import org.springframework.transaction.annotation.Transactional
 
 @RestController
 @RequestMapping("/api/mono")
 class MonoController(
     private val monobankApi: MonobankApi,
-    private val txService: TransactionRepository
+    private val transactionRepository: TransactionRepository,
 ) {
 
     @GetMapping("/ping")
@@ -43,7 +38,7 @@ class MonoController(
         @RequestParam(required = false) to: Long?,
         @RequestParam(required = false, defaultValue = "24") hours: Long
     ): List<MonoTransaction> {
-        val accId = accountId ?: monobankApi.getClientInfo().accounts.firstOrNull()?.id
+        val accId = accountId ?: monobankApi.getClientInfo().accounts.reversed().firstOrNull()?.id
         ?: throw IllegalArgumentException("No accounts in client-info; specify accountId")
 
         val toInstant = to?.let(Instant::ofEpochSecond) ?: Instant.now()
@@ -52,10 +47,11 @@ class MonoController(
         return monobankApi.getStatements(accId, fromInstant, toInstant)
     }
 
-    /**
-     * Вытянуть выписку и СОХРАНИТЬ в БД.
-     * Те же параметры, что /statement.
-     */
+    //@PostConstruct
+    fun test(){
+        ingest("5njU6znBYZ3Oxg0tQcB2og", null, null, 24)
+    }
+
     @PostMapping("/ingest")
     @Transactional
     fun ingest(
@@ -65,7 +61,7 @@ class MonoController(
         @RequestParam(required = false, defaultValue = "24") hours: Long
     ): Map<String, Any> {
         val txs = statement(accountId, from, to, hours)
-        txService.save(txs)
+        transactionRepository.save(txs)
         return mapOf("ingested" to txs.size)
     }
 }

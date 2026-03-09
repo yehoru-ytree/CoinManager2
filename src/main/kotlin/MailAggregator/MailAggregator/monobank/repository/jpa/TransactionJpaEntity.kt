@@ -10,12 +10,12 @@ import java.util.UUID
 @Table(name = "transaction", schema = "bankaggregator")
 data class TransactionJpaEntity(
     @Id
-    val id: UUID,
+    val id: String,
 
     @Column(name = "created_at", nullable = false)
     val createdAt: Long,
 
     @Type(JsonType::class)
     @Column(name = "raw", columnDefinition = "jsonb", nullable = false)
-    val raw: JsonNode
+    val raw: JsonNode,
 )

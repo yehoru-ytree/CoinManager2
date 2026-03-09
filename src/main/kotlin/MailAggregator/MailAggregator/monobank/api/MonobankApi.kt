@@ -24,7 +24,6 @@ class MonobankApi(
         .defaultHeader("X-Token", token) // персональный токен
         .build()
 
-    /** Получить список счетов/клиентскую инфу (нужно, чтобы узнать account.id) */
     fun getClientInfo(): MonoApiClientInfo =
         client.get()
             .uri("/personal/client-info")
@@ -32,10 +31,6 @@ class MonobankApi(
             .body(MonoApiClientInfo::class.java)
             ?: MonoApiClientInfo()
 
-    /**
-     * Выписка (statement) по счёту за интервал [from; to].
-     * from/to — Unix seconds (Monobank ограничивает окно ~31 день + 1 час, и не чаще 1 запроса/60с).
-     */
     fun getStatements(
         accountId: String,
         from: Instant,
