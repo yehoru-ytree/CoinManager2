@@ -37,6 +37,9 @@ dependencies {
     // Jackson Kotlin support
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
 
+    // Telegram Bot API
+    implementation("com.github.pengrad:java-telegram-bot-api:9.5.0")
+
     // Kotlin стандартная библиотека
     implementation("org.jetbrains.kotlin:kotlin-reflect")
     implementation("org.jetbrains.kotlin:kotlin-stdlib-jdk8")

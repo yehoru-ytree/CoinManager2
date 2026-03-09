@@ -24,11 +24,9 @@ class ProcessIncomingMonobankTransactionsUseCase(
         const val ACCOUNT_ID = "5njU6znBYZ3Oxg0tQcB2og" //TODO remove from here
     }
 
-    @PostConstruct
     operator fun invoke() {
         val to = Instant.now()
         val from = to.minusSeconds(7 * 24 * 3600)
-        val today = LocalDate.now()
 
         val monoTransactions = monobankApi.getStatements(ACCOUNT_ID, from, to)
             .filter { it.raw.amount < 0 } //TODO somehow manage in future

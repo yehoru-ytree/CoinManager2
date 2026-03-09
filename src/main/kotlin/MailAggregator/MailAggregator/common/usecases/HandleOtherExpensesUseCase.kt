@@ -4,9 +4,7 @@ import MailAggregator.MailAggregator.common.config.Config.Companion.TIME_ZONE
 import MailAggregator.MailAggregator.monobank.application.MonoTransaction
 import MailAggregator.MailAggregator.telegram.CategorizationBot
 import MailAggregator.MailAggregator.telegram.model.CategorizationRequest
-import com.pengrad.telegrambot.TelegramBot
 import java.time.Instant
-import java.time.ZoneId
 
 class HandleOtherExpensesUseCase(
     val telegramBot: CategorizationBot,
