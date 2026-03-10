@@ -2,8 +2,9 @@ package MailAggregator.MailAggregator.monobank.application
 
 enum class TransactionStatus {
     EXECUTED,
-    PENDING,
-    IGNORED;
+    RECEIVED,
+    IGNORED,
+    PENDING_APPROVAL;
 
     companion object {
         fun fromString(value: String): TransactionStatus {

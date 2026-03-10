@@ -23,6 +23,7 @@ target/
 .gradle
 /.gradle
 **/.gradle/
+.env
 
 ### NetBeans ###
 /nbproject/private/

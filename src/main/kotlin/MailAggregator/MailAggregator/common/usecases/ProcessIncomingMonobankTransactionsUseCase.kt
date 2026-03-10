@@ -7,14 +7,13 @@ import MailAggregator.MailAggregator.common.usecases.ExecuteTransactionsUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleOtherExpensesUseCase
 import MailAggregator.MailAggregator.monobank.api.MonobankApi
 import MailAggregator.MailAggregator.monobank.application.MonoTransaction
-import jakarta.annotation.PostConstruct
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 
 class ProcessIncomingMonobankTransactionsUseCase(
     val monobankApi: MonobankApi,
-    val handleIncomingTransactionUseCase: HandleIncomingTransactionUseCase,
+    val handleNotProcessedTransactionsUseCase: HandleNotProcessedTransactionsUseCase,
     val categorizeExpenseUseCase: CategorizeExpenseUseCase,
     val mergeSpendingsByDateUseCase: MergeSpendingsByDateUseCase,
     val executeTransactionsUseCase: ExecuteTransactionsUseCase,
@@ -28,10 +27,17 @@ class ProcessIncomingMonobankTransactionsUseCase(
         val to = Instant.now()
         val from = to.minusSeconds(7 * 24 * 3600)
 
-        val monoTransactions = monobankApi.getStatements(ACCOUNT_ID, from, to)
-            .filter { it.raw.amount < 0 } //TODO somehow manage in future
 
-        val newTransactions = handleIncomingTransactionUseCase(monoTransactions)
+        val monoTransactions = try {
+            monobankApi.getStatements(ACCOUNT_ID, from, to)
+                .filter { it.raw.amount < 0 } //TODO somehow manage in future
+
+        } catch (e: Exception) {
+            println("Failed to fetch transactions from Monobank API: ${e.message}")
+            return
+        }
+
+        val newTransactions = handleNotProcessedTransactionsUseCase(monoTransactions)
 
         val newTransactionsByDate = groupByLocalDate(newTransactions)
 
@@ -48,7 +54,12 @@ class ProcessIncomingMonobankTransactionsUseCase(
                 it.value == Category.OTHER
             }, newTransactions)
 
-            mergeSpendingsByDateUseCase(day.key, mergedSpendings)
+            try {
+                mergeSpendingsByDateUseCase(day.key, mergedSpendings)
+            } catch (e: Exception) {
+                println("Failed to update spreadsheet for date ${day.key}: ${e.message}")
+                continue
+            }
 
             executeTransactionsUseCase(day.value)
         }
@@ -56,9 +67,6 @@ class ProcessIncomingMonobankTransactionsUseCase(
         handleOtherExpensesUseCase(
             monoTransactions.filter { it.id in uncategorizedExpenses }
         )
-
-        val b = 5
-
     }
 
     fun mergeExpenses(
