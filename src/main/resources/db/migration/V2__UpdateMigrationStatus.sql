@@ -1,1 +1,1 @@
-alter table bankAggregator.transaction_status set status 'RECEIVED' where status = 'PENDING';
+UPDATE bankAggregator.transaction_status set status = 'RECEIVED' where status = 'PENDING';

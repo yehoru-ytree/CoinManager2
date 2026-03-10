@@ -32,6 +32,8 @@ class HandleTelegramResponseUseCase(
                     decision.category to transaction.get().raw.amount.toDouble() * -1 / 100.0
                 )
             )
+
+            transactionStatusRepository.save(mapOf(transactionId to TransactionStatus.EXECUTED))
         }
     }
 }
