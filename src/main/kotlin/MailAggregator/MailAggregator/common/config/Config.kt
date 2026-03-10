@@ -8,7 +8,7 @@ import MailAggregator.MailAggregator.monobank.api.MonobankApi
 import MailAggregator.MailAggregator.monobank.repository.TransactionRepository
 import MailAggregator.MailAggregator.monobank.repository.TransactionStatusRepository
 import MailAggregator.MailAggregator.spreadsheet.usecases.GetSpendingsByDateUseCase
-import MailAggregator.MailAggregator.spreadsheet.usecases.HandleIncomingTransactionUseCase
+import MailAggregator.MailAggregator.spreadsheet.usecases.HandleNotProcessedTransactionsUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.MergeSpendingsByDateUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.ProcessIncomingMonobankTransactionsUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.UpdateSpendingsByDateUseCase
@@ -30,7 +30,7 @@ class Config {
     fun handleIncomingTransactionUseCase(
         transactionRepository: TransactionRepository,
         transactionStatusRepository: TransactionStatusRepository,
-    ) = HandleIncomingTransactionUseCase(
+    ) = HandleNotProcessedTransactionsUseCase(
         transactionRepository = transactionRepository,
         transactionStatusRepository = transactionStatusRepository
     )
@@ -38,14 +38,14 @@ class Config {
     @Bean
     fun processIncomingMonobankTransactionsUseCase(
         monobankApi: MonobankApi,
-        handleIncomingTransactionUseCase: HandleIncomingTransactionUseCase,
+        handleNotProcessedTransactionsUseCase: HandleNotProcessedTransactionsUseCase,
         categorizeExpenseUseCase: CategorizeExpenseUseCase,
         mergeSpendingsByDateUseCase: MergeSpendingsByDateUseCase,
         executeTransactionsUseCase: ExecuteTransactionsUseCase,
         handleOtherExpensesUseCase: HandleOtherExpensesUseCase,
     ) = ProcessIncomingMonobankTransactionsUseCase(
         monobankApi = monobankApi,
-        handleIncomingTransactionUseCase = handleIncomingTransactionUseCase,
+        handleNotProcessedTransactionsUseCase = handleNotProcessedTransactionsUseCase,
         categorizeExpenseUseCase = categorizeExpenseUseCase,
         executeTransactionsUseCase = executeTransactionsUseCase,
         mergeSpendingsByDateUseCase = mergeSpendingsByDateUseCase,
@@ -81,8 +81,10 @@ class Config {
 
     @Bean
     fun handleOtherExpensesUseCase(
-        categorizationBot: CategorizationBot
+        categorizationBot: CategorizationBot,
+        transactionStatusRepository: TransactionStatusRepository
     ) = HandleOtherExpensesUseCase(
-        telegramBot = categorizationBot
+        telegramBot = categorizationBot,
+        transactionStatusRepository = transactionStatusRepository
     )
 }

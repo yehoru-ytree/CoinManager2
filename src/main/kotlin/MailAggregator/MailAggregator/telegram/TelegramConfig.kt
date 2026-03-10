@@ -11,10 +11,10 @@ class TelegramConfig {
     fun categorizationBot(
         handleTelegramResponseUseCase: HandleTelegramResponseUseCase,
         @Value("\${telegram.bot-token}") botToken: String,
-        @Value("\${telegram.owner-chat-id}") ownerChatId: Long,
+        @Value("\${telegram.owner-chat-id}") ownerChatId: String,
     ) = CategorizationBot(
         token = botToken,
-        ownerChatId = ownerChatId,
+        ownerChatId = ownerChatId.toLong(),
         onDecision = { transactionId, decision ->
             handleTelegramResponseUseCase(transactionId, decision)
         },

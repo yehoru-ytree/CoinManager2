@@ -70,7 +70,7 @@ class CategorizeExpenseUseCase {
         // RESERVATION / DONATIONS / BEAUTY / UNIVERSITY / WORK_LUNCH — аналогично
         rule(Category.RESERVATION, 30, "booking", "airbnb", "бронь", "депозит"),
         rule(Category.DONATIONS, 30, "Поповнення", "донат", "пожертв", "donation"),
-        rule(Category.BEAUTY, 30, "салон", "парикмахер", "маникюр", "космет"),
+        rule(Category.BEAUTY, 30, "салон", "парикмахер", "маникюр", "космет", "talalai"),
         rule(Category.UNIVERSITY, 30, "university", "универ", "оплата обуч", "tuition"),
         rule(Category.WORK_LUNCH, 25, "столов", "canteen", "обед на работе")
     ).sortedByDescending { it.priority }

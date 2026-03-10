@@ -3,7 +3,7 @@ import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import org.springframework.boot.gradle.tasks.run.BootRun
 
 plugins {
-    id("org.springframework.boot") version "3.2.5"
+    id("org.springframework.boot") version "4.0.1"
     kotlin("jvm") version "2.2.0"
     kotlin("plugin.spring") version "1.9.22"
     id("com.avast.gradle.docker-compose") version "0.17.18"

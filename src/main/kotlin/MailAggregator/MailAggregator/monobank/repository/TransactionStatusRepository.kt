@@ -34,4 +34,6 @@ class TransactionStatusRepository(
 
     fun get(transactionId: UUID) = transactionStatusJpaRepository.findById(transactionId)
 
+    fun getReceivedTransactions() = transactionStatusJpaRepository.findAllByStatus(TransactionStatus.RECEIVED.toString())
+
 }

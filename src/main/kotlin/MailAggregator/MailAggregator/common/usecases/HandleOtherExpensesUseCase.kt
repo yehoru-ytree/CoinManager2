@@ -2,12 +2,15 @@ package MailAggregator.MailAggregator.common.usecases
 
 import MailAggregator.MailAggregator.common.config.Config.Companion.TIME_ZONE
 import MailAggregator.MailAggregator.monobank.application.MonoTransaction
+import MailAggregator.MailAggregator.monobank.application.TransactionStatus
+import MailAggregator.MailAggregator.monobank.repository.TransactionStatusRepository
 import MailAggregator.MailAggregator.telegram.CategorizationBot
 import MailAggregator.MailAggregator.telegram.model.CategorizationRequest
 import java.time.Instant
 
 class HandleOtherExpensesUseCase(
     val telegramBot: CategorizationBot,
+    val transactionStatusRepository: TransactionStatusRepository
 ) {
     operator fun invoke(uncategorizedTransactions: List<MonoTransaction>) {
         for (transaction in uncategorizedTransactions) {
@@ -20,7 +23,9 @@ class HandleOtherExpensesUseCase(
                         .atZone(TIME_ZONE)
                         .toLocalDateTime().toString()
                 )
-
+            )
+            transactionStatusRepository.save(
+                mapOf(transaction.id to TransactionStatus.PENDING_APPROVAL)
             )
         }
     }
