@@ -13,14 +13,23 @@ import MailAggregator.MailAggregator.spreadsheet.usecases.MergeSpendingsByDateUs
 import MailAggregator.MailAggregator.spreadsheet.usecases.ProcessIncomingMonobankTransactionsUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.UpdateSpendingsByDateUseCase
 import MailAggregator.MailAggregator.telegram.CategorizationBot
+import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import java.time.ZoneId
 
 @Configuration
-class Config {
-    companion object{
-        val TIME_ZONE = ZoneId.of("Europe/Zaporozhye")
+class Config(
+    @Value("\${app.timezone}") timezone: String,
+) {
+    init {
+        TIME_ZONE = ZoneId.of(timezone)
+    }
+
+    companion object {
+        // Initialised from app.timezone in Config's constructor; default kept for tests/static access before Spring boots.
+        var TIME_ZONE: ZoneId = ZoneId.of("Europe/Zaporozhye")
+            private set
     }
 
     @Bean
@@ -43,13 +52,17 @@ class Config {
         mergeSpendingsByDateUseCase: MergeSpendingsByDateUseCase,
         executeTransactionsUseCase: ExecuteTransactionsUseCase,
         handleOtherExpensesUseCase: HandleOtherExpensesUseCase,
+        @Value("\${monobank.account-id}") accountId: String,
+        @Value("\${monobank.statement-window-minutes}") statementWindowMinutes: Long,
     ) = ProcessIncomingMonobankTransactionsUseCase(
         monobankApi = monobankApi,
         handleNotProcessedTransactionsUseCase = handleNotProcessedTransactionsUseCase,
         categorizeExpenseUseCase = categorizeExpenseUseCase,
         executeTransactionsUseCase = executeTransactionsUseCase,
         mergeSpendingsByDateUseCase = mergeSpendingsByDateUseCase,
-        handleOtherExpensesUseCase = handleOtherExpensesUseCase
+        handleOtherExpensesUseCase = handleOtherExpensesUseCase,
+        accountId = accountId,
+        statementWindowMinutes = statementWindowMinutes,
     )
 
     @Bean

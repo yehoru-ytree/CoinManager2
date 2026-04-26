@@ -36,10 +36,12 @@ class SpreadsheetConfig {
     @Bean
     fun prepareTemplateSpreadsheetUseCase(
         sheetRequester: SheetRequester,
-        @Value("\${google.sheet-id}") sheetId: String
+        @Value("\${google.sheet-id}") sheetId: String,
+        @Value("\${google.template-sheet-title}") templateSheetTitle: String,
     ) = VerifyMonthSheetExistsUseCase(
         sheetRequester,
-        sheetId
+        sheetId,
+        templateSheetTitle,
     )
 
     @Bean

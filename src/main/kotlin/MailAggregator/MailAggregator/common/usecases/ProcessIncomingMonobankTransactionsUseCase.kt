@@ -17,19 +17,17 @@ class ProcessIncomingMonobankTransactionsUseCase(
     val categorizeExpenseUseCase: CategorizeExpenseUseCase,
     val mergeSpendingsByDateUseCase: MergeSpendingsByDateUseCase,
     val executeTransactionsUseCase: ExecuteTransactionsUseCase,
-    val handleOtherExpensesUseCase: HandleOtherExpensesUseCase
+    val handleOtherExpensesUseCase: HandleOtherExpensesUseCase,
+    val accountId: String,
+    val statementWindowMinutes: Long,
 ) {
-    companion object {
-        const val ACCOUNT_ID = "5njU6znBYZ3Oxg0tQcB2og" //TODO remove from here
-    }
-
     operator fun invoke() {
         val to = Instant.now()
-        val from = to.minusSeconds(7 * 24 * 3600)
+        val from = to.minusSeconds(statementWindowMinutes * 60)
 
 
         val monoTransactions = try {
-            monobankApi.getStatements(ACCOUNT_ID, from, to)
+            monobankApi.getStatements(accountId, from, to)
                 .filter { it.raw.amount < 0 } //TODO somehow manage in future
 
         } catch (e: Exception) {
