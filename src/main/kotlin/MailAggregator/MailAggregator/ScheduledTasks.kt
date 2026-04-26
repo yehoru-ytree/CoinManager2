@@ -14,7 +14,7 @@ class ScheduledTasks(
     val processIncomingMonobankTransactionsUseCase: ProcessIncomingMonobankTransactionsUseCase
 )  {
 
-    @Scheduled(fixedDelayString = "PT5M")
+    @Scheduled(fixedDelayString = "\${monobank.poll-interval}")
     fun scheduledTask(){
         processIncomingMonobankTransactionsUseCase()
     }

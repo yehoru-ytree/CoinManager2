@@ -6,6 +6,7 @@ import java.time.YearMonth
 class VerifyMonthSheetExistsUseCase(
     private val sheetRequester: SheetRequester,
     private val sheetId: String,
+    private val templateSheetTitle: String,
 ) {
     operator fun invoke(targetSheetTitle: String) {
         val targetSheetAlreadyExists = sheetRequester.sheetExists(sheetId, targetSheetTitle)
@@ -13,7 +14,7 @@ class VerifyMonthSheetExistsUseCase(
         if (!targetSheetAlreadyExists) {
             sheetRequester.duplicateSheet(
                 spreadsheetId = sheetId,
-                sourceSheetTitle = TEMPLATE_SHEET_TITLE,
+                sourceSheetTitle = templateSheetTitle,
                 newSheetTitle = targetSheetTitle,
             )
             clearUserEditableArea(targetSheetTitle)
@@ -61,7 +62,6 @@ class VerifyMonthSheetExistsUseCase(
     }
 
     companion object {
-        private const val TEMPLATE_SHEET_TITLE = "Февраль 2026"
         private const val MAX_DAYS_COLUMNS = 31
 
         private val SHEET_TITLE_REGEX = Regex("""([А-Яа-яЁё]+)\s*(\d{4})""")
