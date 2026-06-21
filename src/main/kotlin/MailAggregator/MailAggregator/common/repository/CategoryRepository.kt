@@ -34,7 +34,9 @@ class CategoryRepository(
     fun nextSheetRow(): Int =
         (categoryJpaRepository.findAll().maxOfOrNull { it.sheetRow } ?: -1) + 1
 
-    fun insert(category: Category): Category {
+    fun insert(category: Category): Category = save(category)
+
+    fun save(category: Category): Category {
         val entity = CategoryJpaEntity(
             id = category.id,
             name = category.name,

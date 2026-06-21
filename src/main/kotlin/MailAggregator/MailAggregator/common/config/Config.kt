@@ -7,6 +7,7 @@ import MailAggregator.MailAggregator.common.usecases.HandleTelegramCommentUseCas
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramResponseUseCase
 import MailAggregator.MailAggregator.common.usecases.ExecuteTransactionsUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleOtherExpensesUseCase
+import MailAggregator.MailAggregator.common.usecases.SaveKeywordUseCase
 import MailAggregator.MailAggregator.monobank.api.MonobankApi
 import MailAggregator.MailAggregator.monobank.repository.TransactionRepository
 import MailAggregator.MailAggregator.monobank.repository.TransactionStatusRepository
@@ -149,5 +150,12 @@ class Config(
         telegramLogMessageRepository = telegramLogMessageRepository,
         transactionRepository = transactionRepository,
         appendCommentToSheetUseCase = appendCommentToSheetUseCase,
+    )
+
+    @Bean
+    fun saveKeywordUseCase(
+        categoryRepository: CategoryRepository,
+    ) = SaveKeywordUseCase(
+        categoryRepository = categoryRepository,
     )
 }
