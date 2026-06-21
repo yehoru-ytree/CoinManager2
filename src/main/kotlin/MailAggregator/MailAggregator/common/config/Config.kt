@@ -73,6 +73,7 @@ class Config(
         executeTransactionsUseCase: ExecuteTransactionsUseCase,
         handleOtherExpensesUseCase: HandleOtherExpensesUseCase,
         categoryRepository: CategoryRepository,
+        categorizationBot: CategorizationBot,
         @Value("\${monobank.account-id}") accountId: String,
         @Value("\${monobank.statement-window-minutes}") statementWindowMinutes: Long,
     ) = ProcessIncomingMonobankTransactionsUseCase(
@@ -83,6 +84,7 @@ class Config(
         mergeSpendingsByDateUseCase = mergeSpendingsByDateUseCase,
         handleOtherExpensesUseCase = handleOtherExpensesUseCase,
         categoryRepository = categoryRepository,
+        categorizationBot = categorizationBot,
         accountId = accountId,
         statementWindowMinutes = statementWindowMinutes,
     )

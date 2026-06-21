@@ -1,8 +1,11 @@
 package MailAggregator.MailAggregator.telegram
 
+import MailAggregator.MailAggregator.common.Category
 import MailAggregator.MailAggregator.common.config.Config.Companion.TIME_ZONE
 import MailAggregator.MailAggregator.common.repository.CategoryRepository
 import MailAggregator.MailAggregator.common.usecases.AddCategoryUseCase
+import MailAggregator.MailAggregator.monobank.application.MonoTransaction
+import MailAggregator.MailAggregator.monobank.repository.TransactionRepository
 import MailAggregator.MailAggregator.telegram.model.CategorizationRequest
 import com.pengrad.telegrambot.TelegramBot
 import com.pengrad.telegrambot.UpdatesListener
@@ -14,7 +17,9 @@ import com.pengrad.telegrambot.request.AnswerCallbackQuery
 import com.pengrad.telegrambot.request.EditMessageReplyMarkup
 import com.pengrad.telegrambot.request.SendMessage
 import jakarta.annotation.PostConstruct
+import java.time.Instant
 import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.UUID
 
 class CategorizationBot(
@@ -22,6 +27,7 @@ class CategorizationBot(
     private val ownerChatId: Long,
     private val categoryRepository: CategoryRepository,
     private val addCategoryUseCase: AddCategoryUseCase,
+    private val transactionRepository: TransactionRepository,
     private val zoneId: ZoneId = TIME_ZONE,
     private val onDecision: (txId: String, decision: Decision) -> Unit,
 ) {
@@ -91,6 +97,33 @@ class CategorizationBot(
             bot.execute(EditMessageReplyMarkup(chatId, message.messageId()))
         }
         bot.execute(AnswerCallbackQuery(cq.id()).text("Saved"))
+
+        sendLogForDecision(parsed.txId, parsed.decision)
+    }
+
+    fun sendLog(transaction: MonoTransaction, category: Category?) {
+        val zoned = Instant.ofEpochSecond(transaction.raw.time).atZone(zoneId)
+        val date = zoned.format(DATE_FORMAT)
+        val time = zoned.format(TIME_FORMAT)
+        val amount = "%.2f".format(-transaction.raw.amount.toDouble() / 100.0)
+        val currency = currencyCode(transaction.raw.currencyCode)
+        val tail = category?.let { "Категория: ${it.displayName}" } ?: "Игнорировано"
+
+        val text = buildString {
+            appendLine("🧾 ${transaction.raw.description}")
+            appendLine("$date $time  −$amount $currency")
+            append(tail)
+        }
+        bot.execute(SendMessage(ownerChatId, text))
+    }
+
+    private fun sendLogForDecision(txId: String, decision: Decision) {
+        val tx = transactionRepository.get(txId).orElse(null) ?: return
+        val category = when (decision) {
+            is Decision.Category -> categoryRepository.findById(decision.categoryId) ?: return
+            Decision.Ignore -> null
+        }
+        sendLog(tx, category)
     }
 
     private fun handleAddCategory(msg: Message) {
@@ -196,5 +229,18 @@ class CategorizationBot(
     sealed class Decision {
         data class Category(val categoryId: UUID) : Decision()
         data object Ignore : Decision()
+    }
+
+    companion object {
+        private val DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+        private val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+
+        private fun currencyCode(numericCode: Int): String = when (numericCode) {
+            980 -> "UAH"
+            840 -> "USD"
+            978 -> "EUR"
+            826 -> "GBP"
+            else -> "ccy:$numericCode"
+        }
     }
 }
