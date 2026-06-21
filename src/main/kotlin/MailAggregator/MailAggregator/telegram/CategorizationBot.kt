@@ -1,22 +1,27 @@
 package MailAggregator.MailAggregator.telegram
 
-import MailAggregator.MailAggregator.common.Category
 import MailAggregator.MailAggregator.common.config.Config.Companion.TIME_ZONE
+import MailAggregator.MailAggregator.common.repository.CategoryRepository
+import MailAggregator.MailAggregator.common.usecases.AddCategoryUseCase
 import MailAggregator.MailAggregator.telegram.model.CategorizationRequest
 import com.pengrad.telegrambot.TelegramBot
 import com.pengrad.telegrambot.UpdatesListener
-import com.pengrad.telegrambot.request.AnswerCallbackQuery
-import com.pengrad.telegrambot.request.EditMessageReplyMarkup
-import com.pengrad.telegrambot.request.SendMessage
+import com.pengrad.telegrambot.model.Message
 import com.pengrad.telegrambot.model.Update
 import com.pengrad.telegrambot.model.request.InlineKeyboardButton
 import com.pengrad.telegrambot.model.request.InlineKeyboardMarkup
+import com.pengrad.telegrambot.request.AnswerCallbackQuery
+import com.pengrad.telegrambot.request.EditMessageReplyMarkup
+import com.pengrad.telegrambot.request.SendMessage
 import jakarta.annotation.PostConstruct
 import java.time.ZoneId
+import java.util.UUID
 
 class CategorizationBot(
     private val token: String,
     private val ownerChatId: Long,
+    private val categoryRepository: CategoryRepository,
+    private val addCategoryUseCase: AddCategoryUseCase,
     private val zoneId: ZoneId = TIME_ZONE,
     private val onDecision: (txId: String, decision: Decision) -> Unit,
 ) {
@@ -43,16 +48,27 @@ class CategorizationBot(
         val keyboard = buildKeyboard(transaction.transactionId)
 
         bot.execute(
-            SendMessage(ownerChatId, text).replyMarkup(keyboard)
+            SendMessage(ownerChatId, text).replyMarkup(keyboard),
         )
     }
 
     private fun handleUpdate(update: Update) {
         val msg = update.message()
-        if (msg != null && msg.text() == "/start") {
+
+        if (msg != null && msg.text() != null) {
             val chatId = msg.chat().id()
-            bot.execute(SendMessage(chatId, "OK. Your chatId=$chatId"))
-            return
+            val text = msg.text()
+            when {
+                text == "/start" -> {
+                    bot.execute(SendMessage(chatId, "OK. Your chatId=$chatId"))
+                    return
+                }
+                text.startsWith("/addcategory") -> {
+                    if (chatId != ownerChatId) return
+                    handleAddCategory(msg)
+                    return
+                }
+            }
         }
 
         val cq = update.callbackQuery() ?: return
@@ -62,7 +78,7 @@ class CategorizationBot(
             return
         }
 
-        val data = cq.data() ?: return // data приходит из callback_data :contentReference[oaicite:4]{index=4}
+        val data = cq.data() ?: return
         val parsed = parseCallbackData(data) ?: run {
             bot.execute(AnswerCallbackQuery(cq.id()).text("Bad callback"))
             return
@@ -77,45 +93,108 @@ class CategorizationBot(
         bot.execute(AnswerCallbackQuery(cq.id()).text("Saved"))
     }
 
+    private fun handleAddCategory(msg: Message) {
+        val chatId = msg.chat().id()
+        val parsed = parseAddCategoryCommand(msg.text())
+        if (parsed == null) {
+            bot.execute(
+                SendMessage(
+                    chatId,
+                    "Usage: /addcategory NAME \"Display name\" priority kw1,kw2,...\n" +
+                        "Example: /addcategory PETS \"Питомцы\" 50 zoo,корм для котов,vet",
+                ),
+            )
+            return
+        }
+
+        if (categoryRepository.findByName(parsed.name) != null) {
+            bot.execute(SendMessage(chatId, "Category '${parsed.name}' already exists."))
+            return
+        }
+
+        val category = addCategoryUseCase.add(
+            name = parsed.name,
+            displayName = parsed.displayName,
+            priority = parsed.priority,
+            keywords = parsed.keywords,
+        )
+        bot.execute(
+            SendMessage(
+                chatId,
+                "OK. Created '${category.name}' (${category.displayName}) at sheet_row=${category.sheetRow}.",
+            ),
+        )
+    }
+
     private fun buildKeyboard(transactionId: String): InlineKeyboardMarkup {
+        val all = categoryRepository.findAll()
+        val regular = all.filter { !it.isOther }.sortedBy { it.sheetRow }
+        val other = all.first { it.isOther }
+
         val rows = mutableListOf<Array<InlineKeyboardButton>>()
 
-        Category.entries
-            .filter { it != Category.OTHER } // Other separately in the end
-            .chunked(3)
-            .forEach { chunk ->
-                rows += chunk.map { cat ->
-                    InlineKeyboardButton(cat.displayName).callbackData("c|$transactionId|${cat.index}")
-                }.toTypedArray()
-            }
+        regular.chunked(3).forEach { chunk ->
+            rows += chunk.map { cat ->
+                InlineKeyboardButton(cat.displayName).callbackData("c|$transactionId|${cat.sheetRow}")
+            }.toTypedArray()
+        }
 
         rows += arrayOf(
             InlineKeyboardButton("Игнорировать").callbackData("c|$transactionId|-1"),
-            InlineKeyboardButton("Другое").callbackData("c|$transactionId|21"),
+            InlineKeyboardButton("Другое").callbackData("c|$transactionId|${other.sheetRow}"),
         )
 
         return InlineKeyboardMarkup(*rows.toTypedArray())
     }
 
     private fun parseCallbackData(data: String): Parsed? {
-        // c|<txId>|<CAT>/-1
         val parts = data.split('|')
-        return when (parts.firstOrNull()) {
-            "c" -> if (parts.size == 3){
-                if (parts[2] == "-1") {
-                    Parsed(parts[1], Decision.Ignore)
-                } else {
-                    Parsed(parts[1], Decision.Category(Category.fromIndex(parts[2].toInt())))
-                }
-            } else null
-            else -> null
-        }
+        if (parts.firstOrNull() != "c" || parts.size != 3) return null
+        val sheetRow = parts[2].toIntOrNull() ?: return null
+        if (sheetRow == -1) return Parsed(parts[1], Decision.Ignore)
+        val category = categoryRepository.findBySheetRow(sheetRow) ?: return null
+        return Parsed(parts[1], Decision.Category(category.id))
     }
+
+    private fun parseAddCategoryCommand(text: String): AddCategoryArgs? {
+        val body = text.removePrefix("/addcategory").trim()
+        if (body.isEmpty()) return null
+
+        val nameAndRest = body.split(' ', limit = 2)
+        if (nameAndRest.size < 2) return null
+        val name = nameAndRest[0].trim()
+        if (!name.matches(Regex("[A-Z_]+"))) return null
+        var rest = nameAndRest[1].trim()
+
+        if (!rest.startsWith('"')) return null
+        val closing = rest.indexOf('"', startIndex = 1)
+        if (closing <= 1) return null
+        val displayName = rest.substring(1, closing)
+        rest = rest.substring(closing + 1).trim()
+
+        val priorityAndRest = rest.split(' ', limit = 2)
+        val priority = priorityAndRest.getOrNull(0)?.toIntOrNull() ?: return null
+        val keywordsRaw = priorityAndRest.getOrNull(1)?.trim().orEmpty()
+        val keywords = if (keywordsRaw.isEmpty()) {
+            emptyList()
+        } else {
+            keywordsRaw.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+        }
+
+        return AddCategoryArgs(name, displayName, priority, keywords)
+    }
+
+    private data class AddCategoryArgs(
+        val name: String,
+        val displayName: String,
+        val priority: Int,
+        val keywords: List<String>,
+    )
 
     private data class Parsed(val txId: String, val decision: Decision)
 
     sealed class Decision {
-        data class Category(val category: MailAggregator.MailAggregator.common.Category) : Decision()
+        data class Category(val categoryId: UUID) : Decision()
         data object Ignore : Decision()
     }
 }

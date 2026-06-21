@@ -29,7 +29,7 @@ class HandleTelegramResponseUseCase(
             mergeSpendingsByDateUseCase(
                 date = date,
                 newExpenses = mapOf(
-                    decision.category to transaction.get().raw.amount.toDouble() * -1 / 100.0
+                    decision.categoryId to transaction.get().raw.amount.toDouble() * -1 / 100.0
                 )
             )
 

@@ -1,5 +1,7 @@
 package MailAggregator.MailAggregator.common.config
 
+import MailAggregator.MailAggregator.common.repository.CategoryRepository
+import MailAggregator.MailAggregator.common.usecases.AddCategoryUseCase
 import MailAggregator.MailAggregator.common.usecases.CategorizeExpenseUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramResponseUseCase
 import MailAggregator.MailAggregator.common.usecases.ExecuteTransactionsUseCase
@@ -7,6 +9,7 @@ import MailAggregator.MailAggregator.common.usecases.HandleOtherExpensesUseCase
 import MailAggregator.MailAggregator.monobank.api.MonobankApi
 import MailAggregator.MailAggregator.monobank.repository.TransactionRepository
 import MailAggregator.MailAggregator.monobank.repository.TransactionStatusRepository
+import MailAggregator.MailAggregator.spreadsheet.util.SheetRequester
 import MailAggregator.MailAggregator.spreadsheet.usecases.GetSpendingsByDateUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.HandleNotProcessedTransactionsUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.MergeSpendingsByDateUseCase
@@ -33,7 +36,24 @@ class Config(
     }
 
     @Bean
-    fun categorizeExpenseUseCase() = CategorizeExpenseUseCase()
+    fun categorizeExpenseUseCase(
+        categoryRepository: CategoryRepository,
+    ) = CategorizeExpenseUseCase(
+        categoryRepository = categoryRepository,
+    )
+
+    @Bean
+    fun addCategoryUseCase(
+        categoryRepository: CategoryRepository,
+        sheetRequester: SheetRequester,
+        @Value("\${google.sheet-id}") sheetId: String,
+        @Value("\${google.template-sheet-title}") templateSheetTitle: String,
+    ) = AddCategoryUseCase(
+        categoryRepository = categoryRepository,
+        sheetRequester = sheetRequester,
+        sheetId = sheetId,
+        templateSheetTitle = templateSheetTitle,
+    )
 
     @Bean
     fun handleIncomingTransactionUseCase(
@@ -52,6 +72,7 @@ class Config(
         mergeSpendingsByDateUseCase: MergeSpendingsByDateUseCase,
         executeTransactionsUseCase: ExecuteTransactionsUseCase,
         handleOtherExpensesUseCase: HandleOtherExpensesUseCase,
+        categoryRepository: CategoryRepository,
         @Value("\${monobank.account-id}") accountId: String,
         @Value("\${monobank.statement-window-minutes}") statementWindowMinutes: Long,
     ) = ProcessIncomingMonobankTransactionsUseCase(
@@ -61,6 +82,7 @@ class Config(
         executeTransactionsUseCase = executeTransactionsUseCase,
         mergeSpendingsByDateUseCase = mergeSpendingsByDateUseCase,
         handleOtherExpensesUseCase = handleOtherExpensesUseCase,
+        categoryRepository = categoryRepository,
         accountId = accountId,
         statementWindowMinutes = statementWindowMinutes,
     )
