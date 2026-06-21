@@ -16,6 +16,7 @@ import com.pengrad.telegrambot.model.Message
 import com.pengrad.telegrambot.model.Update
 import com.pengrad.telegrambot.model.request.InlineKeyboardButton
 import com.pengrad.telegrambot.model.request.InlineKeyboardMarkup
+import com.pengrad.telegrambot.model.request.ReplyParameters
 import com.pengrad.telegrambot.request.AnswerCallbackQuery
 import com.pengrad.telegrambot.request.EditMessageReplyMarkup
 import com.pengrad.telegrambot.request.SendMessage
@@ -38,6 +39,7 @@ class CategorizationBot(
     private val onDecision: (txId: String, decision: Decision) -> Unit,
 ) {
     private val bot = TelegramBot(token)
+    private val addCategoryStates = java.util.concurrent.ConcurrentHashMap<Long, AddCategoryState>()
 
     @PostConstruct
     fun startLongPolling() {
@@ -70,19 +72,43 @@ class CategorizationBot(
         if (msg != null && msg.text() != null) {
             val chatId = msg.chat().id()
             val text = msg.text()
-            when {
-                text == "/start" -> {
-                    bot.execute(SendMessage(chatId, "OK. Your chatId=$chatId"))
-                    return
-                }
-                text.startsWith("/addcategory") -> {
-                    if (chatId != ownerChatId) return
-                    handleAddCategory(msg)
-                    return
-                }
+
+            if (text == "/start") {
+                bot.execute(SendMessage(chatId, "OK. Your chatId=$chatId"))
+                return
             }
+
+            if (chatId != ownerChatId) return
+
             val replyTo = msg.replyToMessage()
-            if (replyTo != null && chatId == ownerChatId && replyTo.from()?.isBot == true) {
+            val state = addCategoryStates[chatId]
+
+            // Mid-flow cancel: a reply with "Забей" to any bot message kills the flow.
+            if (state != null && replyTo != null && replyTo.from()?.isBot == true &&
+                text.trim().equals(CANCEL_TRIGGER, ignoreCase = true)
+            ) {
+                cancelAddCategoryFlow(chatId, msg)
+                return
+            }
+
+            // Flow step: only counts when the reply targets the current flow's prompt.
+            if (state != null && replyTo != null && replyTo.messageId() == state.lastPromptMessageId) {
+                handleAddCategoryStep(chatId, msg, text, state)
+                return
+            }
+
+            // Trigger phrase as a plain (non-reply) message — restarts the flow if one is running.
+            if (replyTo == null && text.trim().equals(ADD_CATEGORY_TRIGGER, ignoreCase = true)) {
+                if (state != null) {
+                    addCategoryStates.remove(chatId)
+                    reply(msg, "ℹ️ Старый флоу прерван, ничего не сохранено. Начинаю заново.")
+                }
+                startAddCategoryFlow(chatId, msg)
+                return
+            }
+
+            // Replies to bot tx-log messages (comment / save keyword) — still work mid-flow.
+            if (replyTo != null && replyTo.from()?.isBot == true) {
                 handleCommentReply(chatId, replyTo.messageId().toLong(), text)
                 return
             }
@@ -225,37 +251,117 @@ class CategorizationBot(
         sendLog(tx, category)
     }
 
-    private fun handleAddCategory(msg: Message) {
-        val chatId = msg.chat().id()
-        val parsed = parseAddCategoryCommand(msg.text())
-        if (parsed == null) {
-            bot.execute(
-                SendMessage(
-                    chatId,
-                    "Usage: /addcategory NAME \"Display name\" priority kw1,kw2,...\n" +
-                        "Example: /addcategory PETS \"Питомцы\" 50 zoo,корм для котов,vet",
-                ),
+    private fun startAddCategoryFlow(chatId: Long, msg: Message) {
+        val promptId = reply(
+            msg,
+            "Дай название категории (заглавные латинские буквы и `_`). " +
+                "На любом шаге ответь «$CANCEL_TRIGGER», чтобы выйти.",
+        ) ?: return
+        addCategoryStates[chatId] = AddCategoryState.AwaitingName(promptId)
+    }
+
+    private fun handleAddCategoryStep(chatId: Long, msg: Message, rawText: String, state: AddCategoryState) {
+        val text = rawText.trim()
+        when (state) {
+            is AddCategoryState.AwaitingName -> handleNameStep(chatId, msg, text)
+            is AddCategoryState.AwaitingDisplayName -> handleDisplayNameStep(chatId, msg, text, state)
+            is AddCategoryState.AwaitingPriority -> handlePriorityStep(chatId, msg, text, state)
+            is AddCategoryState.AwaitingKeywords -> handleKeywordsStep(chatId, msg, text, state)
+        }
+    }
+
+    private fun cancelAddCategoryFlow(chatId: Long, msg: Message) {
+        addCategoryStates.remove(chatId)
+        reply(msg, "Окей, забил.")
+    }
+
+    private fun handleNameStep(chatId: Long, msg: Message, name: String) {
+        if (!name.matches(NAME_PATTERN)) {
+            val promptId = reply(msg, "Имя должно быть из заглавных латинских букв и `_`. Попробуй ещё:") ?: return
+            addCategoryStates[chatId] = AddCategoryState.AwaitingName(promptId)
+            return
+        }
+        if (categoryRepository.findByName(name) != null) {
+            val promptId = reply(msg, "Категория «$name» уже существует. Дай другое имя:") ?: return
+            addCategoryStates[chatId] = AddCategoryState.AwaitingName(promptId)
+            return
+        }
+        val promptId = reply(msg, "Дай читаемое название:") ?: return
+        addCategoryStates[chatId] = AddCategoryState.AwaitingDisplayName(promptId, name)
+    }
+
+    private fun handleDisplayNameStep(
+        chatId: Long,
+        msg: Message,
+        displayName: String,
+        prev: AddCategoryState.AwaitingDisplayName,
+    ) {
+        if (displayName.isEmpty()) {
+            val promptId = reply(msg, "Пустое не подходит. Дай читаемое название:") ?: return
+            addCategoryStates[chatId] = prev.copy(lastPromptMessageId = promptId)
+            return
+        }
+        val promptId = reply(msg, "Дай приоритет ($PRIORITY_MIN..$PRIORITY_MAX):") ?: return
+        addCategoryStates[chatId] = AddCategoryState.AwaitingPriority(promptId, prev.name, displayName)
+    }
+
+    private fun handlePriorityStep(
+        chatId: Long,
+        msg: Message,
+        priorityRaw: String,
+        prev: AddCategoryState.AwaitingPriority,
+    ) {
+        val priority = priorityRaw.toIntOrNull()
+        if (priority == null || priority !in PRIORITY_MIN..PRIORITY_MAX) {
+            val promptId = reply(msg, "Нужно число от $PRIORITY_MIN до $PRIORITY_MAX. Попробуй ещё:") ?: return
+            addCategoryStates[chatId] = prev.copy(lastPromptMessageId = promptId)
+            return
+        }
+        val promptId = reply(
+            msg,
+            "Дай ключевые слова через запятую, или «$EMPTY_KEYWORDS_TRIGGER» чтобы оставить пустым " +
+                "(тогда добавишь через «Сохранить» в будущем):",
+        ) ?: return
+        addCategoryStates[chatId] = AddCategoryState.AwaitingKeywords(promptId, prev.name, prev.displayName, priority)
+    }
+
+    private fun handleKeywordsStep(
+        chatId: Long,
+        msg: Message,
+        keywordsRaw: String,
+        prev: AddCategoryState.AwaitingKeywords,
+    ) {
+        val keywords = if (keywordsRaw == EMPTY_KEYWORDS_TRIGGER) {
+            emptyList()
+        } else {
+            keywordsRaw.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+        }
+        val category = try {
+            addCategoryUseCase.add(
+                name = prev.name,
+                displayName = prev.displayName,
+                priority = prev.priority,
+                keywords = keywords,
             )
+        } catch (e: Exception) {
+            println("Failed to add category ${prev.name}: ${e.message}")
+            addCategoryStates.remove(chatId)
+            reply(msg, "❌ Не получилось создать категорию: ${e.message}")
             return
         }
-
-        if (categoryRepository.findByName(parsed.name) != null) {
-            bot.execute(SendMessage(chatId, "Category '${parsed.name}' already exists."))
-            return
-        }
-
-        val category = addCategoryUseCase.add(
-            name = parsed.name,
-            displayName = parsed.displayName,
-            priority = parsed.priority,
-            keywords = parsed.keywords,
+        addCategoryStates.remove(chatId)
+        reply(
+            msg,
+            "✓ Создал «${category.name}» (${category.displayName}) на sheet_row=${category.sheetRow}.",
         )
-        bot.execute(
-            SendMessage(
-                chatId,
-                "OK. Created '${category.name}' (${category.displayName}) at sheet_row=${category.sheetRow}.",
-            ),
+    }
+
+    private fun reply(msg: Message, text: String): Int? {
+        val response = bot.execute(
+            SendMessage(msg.chat().id(), text)
+                .replyParameters(ReplyParameters(msg.messageId())),
         )
+        return response?.message()?.messageId()
     }
 
     private fun buildKeyboard(transactionId: String): InlineKeyboardMarkup {
@@ -308,40 +414,31 @@ class CategorizationBot(
         return SaveKeywordCallback(parts[1], category.id)
     }
 
-    private fun parseAddCategoryCommand(text: String): AddCategoryArgs? {
-        val body = text.removePrefix("/addcategory").trim()
-        if (body.isEmpty()) return null
+    private sealed class AddCategoryState {
+        abstract val lastPromptMessageId: Int
 
-        val nameAndRest = body.split(' ', limit = 2)
-        if (nameAndRest.size < 2) return null
-        val name = nameAndRest[0].trim()
-        if (!name.matches(Regex("[A-Z_]+"))) return null
-        var rest = nameAndRest[1].trim()
+        data class AwaitingName(
+            override val lastPromptMessageId: Int,
+        ) : AddCategoryState()
 
-        if (!rest.startsWith('"')) return null
-        val closing = rest.indexOf('"', startIndex = 1)
-        if (closing <= 1) return null
-        val displayName = rest.substring(1, closing)
-        rest = rest.substring(closing + 1).trim()
+        data class AwaitingDisplayName(
+            override val lastPromptMessageId: Int,
+            val name: String,
+        ) : AddCategoryState()
 
-        val priorityAndRest = rest.split(' ', limit = 2)
-        val priority = priorityAndRest.getOrNull(0)?.toIntOrNull() ?: return null
-        val keywordsRaw = priorityAndRest.getOrNull(1)?.trim().orEmpty()
-        val keywords = if (keywordsRaw.isEmpty()) {
-            emptyList()
-        } else {
-            keywordsRaw.split(',').map { it.trim() }.filter { it.isNotEmpty() }
-        }
+        data class AwaitingPriority(
+            override val lastPromptMessageId: Int,
+            val name: String,
+            val displayName: String,
+        ) : AddCategoryState()
 
-        return AddCategoryArgs(name, displayName, priority, keywords)
+        data class AwaitingKeywords(
+            override val lastPromptMessageId: Int,
+            val name: String,
+            val displayName: String,
+            val priority: Int,
+        ) : AddCategoryState()
     }
-
-    private data class AddCategoryArgs(
-        val name: String,
-        val displayName: String,
-        val priority: Int,
-        val keywords: List<String>,
-    )
 
     private data class Parsed(val txId: String, val decision: Decision)
 
@@ -354,6 +451,12 @@ class CategorizationBot(
 
     companion object {
         private const val SAVE_KEYWORD_TRIGGER = "Сохранить"
+        private const val ADD_CATEGORY_TRIGGER = "Добавить категорию"
+        private const val CANCEL_TRIGGER = "Забей"
+        private const val EMPTY_KEYWORDS_TRIGGER = "-"
+        private const val PRIORITY_MIN = 1
+        private const val PRIORITY_MAX = 100
+        private val NAME_PATTERN = Regex("[A-Z_]+")
         private val DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
         private val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 
