@@ -3,19 +3,23 @@ package MailAggregator.MailAggregator.common.config
 import MailAggregator.MailAggregator.common.repository.CategoryRepository
 import MailAggregator.MailAggregator.common.usecases.AddCategoryUseCase
 import MailAggregator.MailAggregator.common.usecases.CategorizeExpenseUseCase
+import MailAggregator.MailAggregator.common.usecases.HandleTelegramCommentUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramResponseUseCase
 import MailAggregator.MailAggregator.common.usecases.ExecuteTransactionsUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleOtherExpensesUseCase
 import MailAggregator.MailAggregator.monobank.api.MonobankApi
 import MailAggregator.MailAggregator.monobank.repository.TransactionRepository
 import MailAggregator.MailAggregator.monobank.repository.TransactionStatusRepository
+import MailAggregator.MailAggregator.spreadsheet.usecase.VerifyMonthSheetExistsUseCase
 import MailAggregator.MailAggregator.spreadsheet.util.SheetRequester
+import MailAggregator.MailAggregator.spreadsheet.usecases.AppendCommentToSheetUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.GetSpendingsByDateUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.HandleNotProcessedTransactionsUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.MergeSpendingsByDateUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.ProcessIncomingMonobankTransactionsUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.UpdateSpendingsByDateUseCase
 import MailAggregator.MailAggregator.telegram.CategorizationBot
+import MailAggregator.MailAggregator.telegram.repository.TelegramLogMessageRepository
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -123,5 +127,27 @@ class Config(
     ) = HandleOtherExpensesUseCase(
         telegramBot = categorizationBot,
         transactionStatusRepository = transactionStatusRepository
+    )
+
+    @Bean
+    fun appendCommentToSheetUseCase(
+        sheetRequester: SheetRequester,
+        verifyMonthSheetExistsUseCase: VerifyMonthSheetExistsUseCase,
+        @Value("\${google.sheet-id}") sheetId: String,
+    ) = AppendCommentToSheetUseCase(
+        sheetRequester = sheetRequester,
+        sheetId = sheetId,
+        verifyMonthSheetExistsUseCase = verifyMonthSheetExistsUseCase,
+    )
+
+    @Bean
+    fun handleTelegramCommentUseCase(
+        telegramLogMessageRepository: TelegramLogMessageRepository,
+        transactionRepository: TransactionRepository,
+        appendCommentToSheetUseCase: AppendCommentToSheetUseCase,
+    ) = HandleTelegramCommentUseCase(
+        telegramLogMessageRepository = telegramLogMessageRepository,
+        transactionRepository = transactionRepository,
+        appendCommentToSheetUseCase = appendCommentToSheetUseCase,
     )
 }
