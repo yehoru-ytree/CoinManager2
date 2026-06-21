@@ -4,9 +4,11 @@ import MailAggregator.MailAggregator.common.Category
 import MailAggregator.MailAggregator.common.config.Config.Companion.TIME_ZONE
 import MailAggregator.MailAggregator.common.repository.CategoryRepository
 import MailAggregator.MailAggregator.common.usecases.AddCategoryUseCase
+import MailAggregator.MailAggregator.common.usecases.HandleTelegramCommentUseCase
 import MailAggregator.MailAggregator.monobank.application.MonoTransaction
 import MailAggregator.MailAggregator.monobank.repository.TransactionRepository
 import MailAggregator.MailAggregator.telegram.model.CategorizationRequest
+import MailAggregator.MailAggregator.telegram.repository.TelegramLogMessageRepository
 import com.pengrad.telegrambot.TelegramBot
 import com.pengrad.telegrambot.UpdatesListener
 import com.pengrad.telegrambot.model.Message
@@ -28,6 +30,8 @@ class CategorizationBot(
     private val categoryRepository: CategoryRepository,
     private val addCategoryUseCase: AddCategoryUseCase,
     private val transactionRepository: TransactionRepository,
+    private val telegramLogMessageRepository: TelegramLogMessageRepository,
+    private val handleTelegramCommentUseCase: HandleTelegramCommentUseCase,
     private val zoneId: ZoneId = TIME_ZONE,
     private val onDecision: (txId: String, decision: Decision) -> Unit,
 ) {
@@ -75,6 +79,11 @@ class CategorizationBot(
                     return
                 }
             }
+            val replyTo = msg.replyToMessage()
+            if (replyTo != null && chatId == ownerChatId) {
+                handleCommentReply(chatId, replyTo.messageId().toLong(), text)
+                return
+            }
         }
 
         val cq = update.callbackQuery() ?: return
@@ -114,7 +123,22 @@ class CategorizationBot(
             appendLine("$date $time  −$amount $currency")
             append(tail)
         }
-        bot.execute(SendMessage(ownerChatId, text))
+        val response = bot.execute(SendMessage(ownerChatId, text))
+        val messageId = response?.message()?.messageId()?.toLong() ?: return
+        telegramLogMessageRepository.save(ownerChatId, messageId, transaction.id)
+    }
+
+    private fun handleCommentReply(chatId: Long, replyToMessageId: Long, text: String) {
+        if (text.isBlank()) return
+        val saved = try {
+            handleTelegramCommentUseCase(chatId, replyToMessageId, text)
+        } catch (e: Exception) {
+            println("Failed to save Telegram comment: ${e.message}")
+            return
+        }
+        if (saved) {
+            bot.execute(SendMessage(chatId, "✓ Comment saved"))
+        }
     }
 
     private fun sendLogForDecision(txId: String, decision: Decision) {
