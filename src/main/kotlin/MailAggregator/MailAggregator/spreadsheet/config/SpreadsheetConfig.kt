@@ -1,5 +1,6 @@
 package MailAggregator.MailAggregator.spreadsheet.config
 
+import MailAggregator.MailAggregator.common.repository.CategoryRepository
 import MailAggregator.MailAggregator.spreadsheet.Authentication
 import MailAggregator.MailAggregator.spreadsheet.usecase.VerifyMonthSheetExistsUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.GetSpendingsByDateUseCase
@@ -15,22 +16,26 @@ class SpreadsheetConfig {
     fun getSpendingsByDateUseCase(
         sheetRequester: SheetRequester,
         @Value("\${google.sheet-id}") sheetId: String,
-        verifyMonthSheetExistsUseCase: VerifyMonthSheetExistsUseCase
+        verifyMonthSheetExistsUseCase: VerifyMonthSheetExistsUseCase,
+        categoryRepository: CategoryRepository,
     ) = GetSpendingsByDateUseCase(
         sheetRequester,
         sheetId,
-        verifyMonthSheetExistsUseCase
+        verifyMonthSheetExistsUseCase,
+        categoryRepository,
     )
 
     @Bean
     fun updateSpendingsByDateUseCase(
         sheetRequester: SheetRequester,
         @Value("\${google.sheet-id}") sheetId: String,
-        verifyMonthSheetExistsUseCase: VerifyMonthSheetExistsUseCase
+        verifyMonthSheetExistsUseCase: VerifyMonthSheetExistsUseCase,
+        categoryRepository: CategoryRepository,
     ) = UpdateSpendingsByDateUseCase(
         sheetRequester,
         sheetId,
-        verifyMonthSheetExistsUseCase = verifyMonthSheetExistsUseCase
+        verifyMonthSheetExistsUseCase = verifyMonthSheetExistsUseCase,
+        categoryRepository = categoryRepository,
     )
 
     @Bean

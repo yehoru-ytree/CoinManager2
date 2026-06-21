@@ -1,7 +1,7 @@
 package MailAggregator.MailAggregator.spreadsheet.usecases
 
-import MailAggregator.MailAggregator.common.Category
 import MailAggregator.MailAggregator.common.config.Config.Companion.TIME_ZONE
+import MailAggregator.MailAggregator.common.repository.CategoryRepository
 import MailAggregator.MailAggregator.common.usecases.CategorizeExpenseUseCase
 import MailAggregator.MailAggregator.common.usecases.ExecuteTransactionsUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleOtherExpensesUseCase
@@ -10,6 +10,7 @@ import MailAggregator.MailAggregator.monobank.application.MonoTransaction
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.util.UUID
 
 class ProcessIncomingMonobankTransactionsUseCase(
     val monobankApi: MonobankApi,
@@ -18,6 +19,7 @@ class ProcessIncomingMonobankTransactionsUseCase(
     val mergeSpendingsByDateUseCase: MergeSpendingsByDateUseCase,
     val executeTransactionsUseCase: ExecuteTransactionsUseCase,
     val handleOtherExpensesUseCase: HandleOtherExpensesUseCase,
+    val categoryRepository: CategoryRepository,
     val accountId: String,
     val statementWindowMinutes: Long,
 ) {
@@ -39,18 +41,20 @@ class ProcessIncomingMonobankTransactionsUseCase(
 
         val newTransactionsByDate = groupByLocalDate(newTransactions)
 
+        val otherCategoryId = categoryRepository.findOther().id
         val uncategorizedExpenses = mutableListOf<String>()
 
         for (day in newTransactionsByDate) {
             val categorizedExpenses = categorizeExpenseUseCase(day.value)
 
             uncategorizedExpenses.addAll(
-                categorizedExpenses.filter { it.value == Category.OTHER }.keys
+                categorizedExpenses.filter { it.value == otherCategoryId }.keys,
             )
 
-            val mergedSpendings = mergeExpenses(categorizedExpenses.filterNot {
-                it.value == Category.OTHER
-            }, newTransactions)
+            val mergedSpendings = mergeExpenses(
+                categorizedExpenses.filterValues { it != otherCategoryId },
+                newTransactions,
+            )
 
             try {
                 mergeSpendingsByDateUseCase(day.key, mergedSpendings)
@@ -63,24 +67,23 @@ class ProcessIncomingMonobankTransactionsUseCase(
         }
 
         handleOtherExpensesUseCase(
-            monoTransactions.filter { it.id in uncategorizedExpenses }
+            monoTransactions.filter { it.id in uncategorizedExpenses },
         )
     }
 
     fun mergeExpenses(
-        categorizedExpenses: Map<String, Category>,   // txId -> category
+        categorizedExpenses: Map<String, UUID>,   // txId -> categoryId
         newTransactions: List<MonoTransaction>,
-    ): Map<Category, Double> {
-        return newTransactions
+    ): Map<UUID, Double> =
+        newTransactions
             .asSequence()
             .mapNotNull { tx ->
-                val category = categorizedExpenses[tx.id] ?: return@mapNotNull null
+                val categoryId = categorizedExpenses[tx.id] ?: return@mapNotNull null
                 val amount = tx.raw.amount.toDouble() * -1 / 100.0
-                category to amount
+                categoryId to amount
             }
             .groupBy({ it.first }, { it.second })
             .mapValues { (_, amounts) -> amounts.sum() }
-    }
 
     fun groupByLocalDate(
         monoTransactions: List<MonoTransaction>,

@@ -1,32 +1,39 @@
 package MailAggregator.MailAggregator.spreadsheet.usecases
 
-import MailAggregator.MailAggregator.common.Category
 import MailAggregator.MailAggregator.common.Month
+import MailAggregator.MailAggregator.common.repository.CategoryRepository
 import MailAggregator.MailAggregator.spreadsheet.usecase.VerifyMonthSheetExistsUseCase
 import MailAggregator.MailAggregator.spreadsheet.util.ExcelUtil
 import MailAggregator.MailAggregator.spreadsheet.util.SheetRequester
 import java.math.BigDecimal
 import java.time.LocalDate
+import java.util.UUID
 
 class GetSpendingsByDateUseCase(
     val sheetRequester: SheetRequester,
     val sheetId: String,
-    val verifyMonthSheetExistsUseCase: VerifyMonthSheetExistsUseCase
+    val verifyMonthSheetExistsUseCase: VerifyMonthSheetExistsUseCase,
+    val categoryRepository: CategoryRepository,
 ) {
-
-    operator fun invoke(date: LocalDate): Map<Category, Double> {
-        val month = date.month.value.let { Month.fromIndex(it) }
+    operator fun invoke(date: LocalDate): Map<UUID, Double> {
+        val month = Month.fromIndex(date.month.value)
         val sheetName = "${month.displayName} ${date.year}"
 
         verifyMonthSheetExistsUseCase(sheetName)
 
-        val columnName = date.let { ExcelUtil.toColumnName(it.dayOfMonth) }
+        val categories = categoryRepository.findAll()
+        val maxSheetRow = categories.maxOf { it.sheetRow }
+        val startRow = UpdateSpendingsByDateUseCase.START_ROW
+        val endRow = startRow + maxSheetRow
+
+        val columnName = ExcelUtil.toColumnName(date.dayOfMonth)
         val sheet = sheetRequester.getSpreadSheetByRange(
             sheetId,
-            "${columnName}5:${columnName}27",
-            sheetName
+            "$columnName$startRow:$columnName$endRow",
+            sheetName,
         ).sheets[0]
-        val data = sheet.data[0].rowData.orEmpty().map { row ->
+
+        val values = sheet.data[0].rowData.orEmpty().map { row ->
             val cell = row.getValues().orEmpty().getOrNull(0)
             val text = cell?.effectiveValue?.let { ev ->
                 ev.stringValue
@@ -36,7 +43,10 @@ class GetSpendingsByDateUseCase(
             }.orEmpty()
             ExcelUtil.cellDAtaToDouble(text)
         }
-        val res = data.mapIndexed { i, value -> Category.fromIndex(i) to value }.toMap()
-        return res
+
+        val bySheetRow = categories.associateBy { it.sheetRow }
+        return values.mapIndexedNotNull { idx, amount ->
+            bySheetRow[idx]?.let { it.id to amount }
+        }.toMap()
     }
 }
