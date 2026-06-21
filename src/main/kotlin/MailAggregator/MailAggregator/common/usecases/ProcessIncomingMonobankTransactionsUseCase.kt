@@ -7,6 +7,7 @@ import MailAggregator.MailAggregator.common.usecases.ExecuteTransactionsUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleOtherExpensesUseCase
 import MailAggregator.MailAggregator.monobank.api.MonobankApi
 import MailAggregator.MailAggregator.monobank.application.MonoTransaction
+import MailAggregator.MailAggregator.telegram.CategorizationBot
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -20,6 +21,7 @@ class ProcessIncomingMonobankTransactionsUseCase(
     val executeTransactionsUseCase: ExecuteTransactionsUseCase,
     val handleOtherExpensesUseCase: HandleOtherExpensesUseCase,
     val categoryRepository: CategoryRepository,
+    val categorizationBot: CategorizationBot,
     val accountId: String,
     val statementWindowMinutes: Long,
 ) {
@@ -63,12 +65,33 @@ class ProcessIncomingMonobankTransactionsUseCase(
                 continue
             }
 
+            sendAutoCategorizedLogs(
+                day.value,
+                categorizedExpenses.filterValues { it != otherCategoryId },
+            )
+
             executeTransactionsUseCase(day.value)
         }
 
         handleOtherExpensesUseCase(
             monoTransactions.filter { it.id in uncategorizedExpenses },
         )
+    }
+
+    private fun sendAutoCategorizedLogs(
+        transactions: List<MonoTransaction>,
+        categorizedExpenses: Map<String, UUID>,
+    ) {
+        val txById = transactions.associateBy { it.id }
+        categorizedExpenses.forEach { (txId, categoryId) ->
+            val tx = txById[txId] ?: return@forEach
+            val category = categoryRepository.findById(categoryId) ?: return@forEach
+            try {
+                categorizationBot.sendLog(tx, category)
+            } catch (e: Exception) {
+                println("Failed to send Telegram log for transaction $txId: ${e.message}")
+            }
+        }
     }
 
     fun mergeExpenses(
