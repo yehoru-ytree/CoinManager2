@@ -80,7 +80,7 @@ class CategorizationBot(
                 }
             }
             val replyTo = msg.replyToMessage()
-            if (replyTo != null && chatId == ownerChatId) {
+            if (replyTo != null && chatId == ownerChatId && replyTo.from()?.isBot == true) {
                 handleCommentReply(chatId, replyTo.messageId().toLong(), text)
                 return
             }
@@ -134,11 +134,11 @@ class CategorizationBot(
             handleTelegramCommentUseCase(chatId, replyToMessageId, text)
         } catch (e: Exception) {
             println("Failed to save Telegram comment: ${e.message}")
+            bot.execute(SendMessage(chatId, "❌ Не получилось сохранить коммент"))
             return
         }
-        if (saved) {
-            bot.execute(SendMessage(chatId, "✓ Comment saved"))
-        }
+        val reply = if (saved) "✓ Comment saved" else "❌ Не нашёл транзакцию для этого сообщения"
+        bot.execute(SendMessage(chatId, reply))
     }
 
     private fun sendLogForDecision(txId: String, decision: Decision) {
