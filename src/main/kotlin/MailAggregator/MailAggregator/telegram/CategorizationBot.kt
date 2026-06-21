@@ -112,6 +112,18 @@ class CategorizationBot(
                 handleCommentReply(chatId, replyTo.messageId().toLong(), text)
                 return
             }
+
+            // Explicit help command.
+            if (replyTo == null && text.trim().lowercase() in HELP_TRIGGERS) {
+                sendHelp(msg)
+                return
+            }
+
+            // Plain non-reply that did not match anything above — point user to /help.
+            if (replyTo == null) {
+                reply(msg, "Не понял. Напиши «помощь» чтобы увидеть, что я умею.")
+                return
+            }
         }
 
         val cq = update.callbackQuery() ?: return
@@ -356,6 +368,10 @@ class CategorizationBot(
         )
     }
 
+    private fun sendHelp(msg: Message) {
+        reply(msg, HELP_TEXT)
+    }
+
     private fun reply(msg: Message, text: String): Int? {
         val response = bot.execute(
             SendMessage(msg.chat().id(), text)
@@ -457,8 +473,22 @@ class CategorizationBot(
         private const val PRIORITY_MIN = 1
         private const val PRIORITY_MAX = 100
         private val NAME_PATTERN = Regex("[A-Z_]+")
+        private val HELP_TRIGGERS = setOf("помощь", "/help", "help", "/?", "?")
         private val DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
         private val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+        private val HELP_TEXT = """
+            Что я умею:
+
+            /start — узнать свой chatId.
+
+            «Добавить категорию» — пошаговый диалог создания новой категории. Отвечай реплаем на мои сообщения. На любом шаге реплай «Забей» — выйти. Повторное «Добавить категорию» обычным сообщением (не реплаем) — рестарт с нуля.
+
+            Реплаи на лог транзакции от меня:
+            • «Сохранить» — выберу категорию из клавиатуры, description транзакции пойдёт в её keywords (и потом будет авто-категоризоваться).
+            • Любой другой текст — запишу как комментарий в Google Sheets (ряд 2 столбца того дня; несколько комментов соединяются через «;»).
+
+            «помощь» или /help — показать это сообщение.
+        """.trimIndent()
 
         private fun currencyCode(numericCode: Int): String = when (numericCode) {
             980 -> "UAH"
