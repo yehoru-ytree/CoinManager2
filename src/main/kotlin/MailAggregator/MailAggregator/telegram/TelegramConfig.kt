@@ -4,6 +4,7 @@ import MailAggregator.MailAggregator.common.repository.CategoryRepository
 import MailAggregator.MailAggregator.common.usecases.AddCategoryUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramCommentUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramResponseUseCase
+import MailAggregator.MailAggregator.common.usecases.SaveKeywordUseCase
 import MailAggregator.MailAggregator.monobank.repository.TransactionRepository
 import MailAggregator.MailAggregator.telegram.repository.TelegramLogMessageRepository
 import org.springframework.beans.factory.annotation.Value
@@ -16,6 +17,7 @@ class TelegramConfig {
     fun categorizationBot(
         handleTelegramResponseUseCase: HandleTelegramResponseUseCase,
         handleTelegramCommentUseCase: HandleTelegramCommentUseCase,
+        saveKeywordUseCase: SaveKeywordUseCase,
         categoryRepository: CategoryRepository,
         addCategoryUseCase: AddCategoryUseCase,
         transactionRepository: TransactionRepository,
@@ -30,6 +32,7 @@ class TelegramConfig {
         transactionRepository = transactionRepository,
         telegramLogMessageRepository = telegramLogMessageRepository,
         handleTelegramCommentUseCase = handleTelegramCommentUseCase,
+        saveKeywordUseCase = saveKeywordUseCase,
         onDecision = { transactionId, decision ->
             handleTelegramResponseUseCase(transactionId, decision)
         },

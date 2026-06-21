@@ -5,6 +5,7 @@ import MailAggregator.MailAggregator.common.config.Config.Companion.TIME_ZONE
 import MailAggregator.MailAggregator.common.repository.CategoryRepository
 import MailAggregator.MailAggregator.common.usecases.AddCategoryUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramCommentUseCase
+import MailAggregator.MailAggregator.common.usecases.SaveKeywordUseCase
 import MailAggregator.MailAggregator.monobank.application.MonoTransaction
 import MailAggregator.MailAggregator.monobank.repository.TransactionRepository
 import MailAggregator.MailAggregator.telegram.model.CategorizationRequest
@@ -32,6 +33,7 @@ class CategorizationBot(
     private val transactionRepository: TransactionRepository,
     private val telegramLogMessageRepository: TelegramLogMessageRepository,
     private val handleTelegramCommentUseCase: HandleTelegramCommentUseCase,
+    private val saveKeywordUseCase: SaveKeywordUseCase,
     private val zoneId: ZoneId = TIME_ZONE,
     private val onDecision: (txId: String, decision: Decision) -> Unit,
 ) {
@@ -94,6 +96,18 @@ class CategorizationBot(
         }
 
         val data = cq.data() ?: return
+        when (data.firstOrNull()) {
+            'c' -> handleCategorizationCallback(cq, chatId, data)
+            'k' -> handleSaveKeywordCallback(cq, chatId, data)
+            else -> bot.execute(AnswerCallbackQuery(cq.id()).text("Bad callback"))
+        }
+    }
+
+    private fun handleCategorizationCallback(
+        cq: com.pengrad.telegrambot.model.CallbackQuery,
+        chatId: Long,
+        data: String,
+    ) {
         val parsed = parseCallbackData(data) ?: run {
             bot.execute(AnswerCallbackQuery(cq.id()).text("Bad callback"))
             return
@@ -108,6 +122,39 @@ class CategorizationBot(
         bot.execute(AnswerCallbackQuery(cq.id()).text("Saved"))
 
         sendLogForDecision(parsed.txId, parsed.decision)
+    }
+
+    private fun handleSaveKeywordCallback(
+        cq: com.pengrad.telegrambot.model.CallbackQuery,
+        chatId: Long,
+        data: String,
+    ) {
+        val parsed = parseSaveKeywordCallback(data) ?: run {
+            bot.execute(AnswerCallbackQuery(cq.id()).text("Bad callback"))
+            return
+        }
+        val tx = transactionRepository.get(parsed.txId).orElse(null)
+        if (tx == null) {
+            bot.execute(AnswerCallbackQuery(cq.id()).text("Tx not found"))
+            return
+        }
+        val result = saveKeywordUseCase(parsed.categoryId, tx.raw.description)
+        val message = cq.message()
+        if (message != null) {
+            bot.execute(EditMessageReplyMarkup(chatId, message.messageId()))
+        }
+        val (callbackText, replyText) = when (result) {
+            is SaveKeywordUseCase.Result.Saved ->
+                "Saved" to "✓ Добавил «${result.keyword}» в категорию «${result.category.displayName}»"
+            is SaveKeywordUseCase.Result.AlreadyPresent ->
+                "Already present" to "ℹ️ «${result.keyword}» уже в категории «${result.category.displayName}»"
+            SaveKeywordUseCase.Result.CategoryNotFound ->
+                "Category not found" to "❌ Категория не найдена"
+            SaveKeywordUseCase.Result.EmptyKeyword ->
+                "Empty" to "❌ Пустое описание, нечего сохранять"
+        }
+        bot.execute(AnswerCallbackQuery(cq.id()).text(callbackText))
+        bot.execute(SendMessage(chatId, replyText))
     }
 
     fun sendLog(transaction: MonoTransaction, category: Category?) {
@@ -130,6 +177,12 @@ class CategorizationBot(
 
     private fun handleCommentReply(chatId: Long, replyToMessageId: Long, text: String) {
         if (text.isBlank()) return
+
+        if (text.trim().equals(SAVE_KEYWORD_TRIGGER, ignoreCase = true)) {
+            promptSaveKeywordCategory(chatId, replyToMessageId)
+            return
+        }
+
         val saved = try {
             handleTelegramCommentUseCase(chatId, replyToMessageId, text)
         } catch (e: Exception) {
@@ -139,6 +192,28 @@ class CategorizationBot(
         }
         val reply = if (saved) "✓ Comment saved" else "❌ Не нашёл транзакцию для этого сообщения"
         bot.execute(SendMessage(chatId, reply))
+    }
+
+    private fun promptSaveKeywordCategory(chatId: Long, replyToMessageId: Long) {
+        val record = telegramLogMessageRepository.findByChatAndMessage(chatId, replyToMessageId)
+        if (record == null) {
+            bot.execute(SendMessage(chatId, "❌ Не нашёл транзакцию для этого сообщения"))
+            return
+        }
+        val tx = transactionRepository.get(record.transactionId).orElse(null)
+        if (tx == null) {
+            bot.execute(SendMessage(chatId, "❌ Транзакция не найдена в БД"))
+            return
+        }
+        val description = tx.raw.description.trim()
+        if (description.isEmpty()) {
+            bot.execute(SendMessage(chatId, "❌ У транзакции пустое описание, нечего сохранять"))
+            return
+        }
+        bot.execute(
+            SendMessage(chatId, "Выбери категорию для «$description»:")
+                .replyMarkup(buildSaveKeywordKeyboard(record.transactionId)),
+        )
     }
 
     private fun sendLogForDecision(txId: String, decision: Decision) {
@@ -204,6 +279,18 @@ class CategorizationBot(
         return InlineKeyboardMarkup(*rows.toTypedArray())
     }
 
+    private fun buildSaveKeywordKeyboard(transactionId: String): InlineKeyboardMarkup {
+        val regular = categoryRepository.findAll()
+            .filter { !it.isOther }
+            .sortedBy { it.sheetRow }
+        val rows = regular.chunked(3).map { chunk ->
+            chunk.map { cat ->
+                InlineKeyboardButton(cat.displayName).callbackData("k|$transactionId|${cat.sheetRow}")
+            }.toTypedArray()
+        }
+        return InlineKeyboardMarkup(*rows.toTypedArray())
+    }
+
     private fun parseCallbackData(data: String): Parsed? {
         val parts = data.split('|')
         if (parts.firstOrNull() != "c" || parts.size != 3) return null
@@ -211,6 +298,14 @@ class CategorizationBot(
         if (sheetRow == -1) return Parsed(parts[1], Decision.Ignore)
         val category = categoryRepository.findBySheetRow(sheetRow) ?: return null
         return Parsed(parts[1], Decision.Category(category.id))
+    }
+
+    private fun parseSaveKeywordCallback(data: String): SaveKeywordCallback? {
+        val parts = data.split('|')
+        if (parts.firstOrNull() != "k" || parts.size != 3) return null
+        val sheetRow = parts[2].toIntOrNull() ?: return null
+        val category = categoryRepository.findBySheetRow(sheetRow) ?: return null
+        return SaveKeywordCallback(parts[1], category.id)
     }
 
     private fun parseAddCategoryCommand(text: String): AddCategoryArgs? {
@@ -250,12 +345,15 @@ class CategorizationBot(
 
     private data class Parsed(val txId: String, val decision: Decision)
 
+    private data class SaveKeywordCallback(val txId: String, val categoryId: UUID)
+
     sealed class Decision {
         data class Category(val categoryId: UUID) : Decision()
         data object Ignore : Decision()
     }
 
     companion object {
+        private const val SAVE_KEYWORD_TRIGGER = "Сохранить"
         private val DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
         private val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 
