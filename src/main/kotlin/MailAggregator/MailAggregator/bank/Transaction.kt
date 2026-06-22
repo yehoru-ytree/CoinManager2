@@ -9,6 +9,9 @@ import java.util.UUID
  *
  * Amounts are in minor units (kopecks for UAH, cents for USD) where negative = expense, positive
  * = income. `time` is Unix epoch seconds.
+ *
+ * Synthetic cash entries have id prefix [CASH_ID_PREFIX] — check via [isCash] when behaviour
+ * needs to diverge between bank-pulled and manually-entered transactions.
  */
 data class Transaction(
     val id: String,
@@ -20,4 +23,10 @@ data class Transaction(
     val currencyCode: Int,
     val comment: String?,
     val counterName: String?,
-)
+) {
+    val isCash: Boolean get() = id.startsWith(CASH_ID_PREFIX)
+
+    companion object {
+        const val CASH_ID_PREFIX = "cash-"
+    }
+}

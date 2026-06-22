@@ -23,7 +23,7 @@ class AddCashTransactionUseCase(
     fun add(householdId: UUID, amountMajor: Double): Transaction {
         val nowSec = Instant.now().epochSecond
         val tx = Transaction(
-            id = "cash-${UUID.randomUUID()}",
+            id = "${Transaction.CASH_ID_PREFIX}${UUID.randomUUID()}",
             householdId = householdId,
             createdAt = nowSec,
             description = "Наличка",
