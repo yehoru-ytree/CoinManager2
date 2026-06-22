@@ -6,4 +6,5 @@ import java.util.*
 
 interface TransactionStatusJpaRepository : JpaRepository<TransactionStatusJpaEntity, UUID>{
     fun findAllByStatus(status: String): List<TransactionStatusJpaEntity>
+    fun findByTransactionId(transactionId: String): TransactionStatusJpaEntity?
 }

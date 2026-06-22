@@ -24,6 +24,9 @@ class TelegramLogMessageRepository(
     fun findByChatAndMessage(chatId: Long, messageId: Long): TelegramLogMessageJpaEntity? =
         jpa.findByChatIdAndMessageId(chatId, messageId)
 
+    fun findAllByTransactionId(transactionId: String): List<TelegramLogMessageJpaEntity> =
+        jpa.findAllByTransactionId(transactionId)
+
     fun upsertComment(chatId: Long, messageId: Long, comment: String) {
         val existing = jpa.findByChatIdAndMessageId(chatId, messageId) ?: return
         jpa.save(existing.copy(comment = comment))

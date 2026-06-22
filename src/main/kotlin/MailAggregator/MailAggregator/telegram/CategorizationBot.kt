@@ -14,7 +14,9 @@ import MailAggregator.MailAggregator.household.usecase.AddMonobankAccountUseCase
 import MailAggregator.MailAggregator.household.usecase.CreateHouseholdUseCase
 import MailAggregator.MailAggregator.household.usecase.JoinHouseholdUseCase
 import MailAggregator.MailAggregator.monobank.application.MonoTransaction
+import MailAggregator.MailAggregator.monobank.application.TransactionStatus
 import MailAggregator.MailAggregator.monobank.repository.TransactionRepository
+import MailAggregator.MailAggregator.monobank.repository.TransactionStatusRepository
 import MailAggregator.MailAggregator.telegram.model.CategorizationRequest
 import MailAggregator.MailAggregator.telegram.repository.TelegramLogMessageRepository
 import com.pengrad.telegrambot.TelegramBot
@@ -41,6 +43,7 @@ class CategorizationBot(
     private val telegramLogMessageRepository: TelegramLogMessageRepository,
     private val handleTelegramCommentUseCase: HandleTelegramCommentUseCase,
     private val saveKeywordUseCase: SaveKeywordUseCase,
+    private val transactionStatusRepository: TransactionStatusRepository,
     private val householdRepository: HouseholdRepository,
     private val createHouseholdUseCase: CreateHouseholdUseCase,
     private val joinHouseholdUseCase: JoinHouseholdUseCase,
@@ -74,7 +77,16 @@ class CategorizationBot(
         val keyboard = buildKeyboard(transaction.householdId, transaction.transactionId)
         val users = householdRepository.findUsersInHousehold(transaction.householdId)
         for (user in users) {
-            bot.execute(SendMessage(user.chatId, text).replyMarkup(keyboard))
+            val response = bot.execute(SendMessage(user.chatId, text).replyMarkup(keyboard)) ?: continue
+            val messageId = response.message()?.messageId()?.toLong() ?: continue
+            // Persist so we can edit ALL members' keyboards away once the first one taps,
+            // and so any member's reply (Сохранить / коммент) on the prompt routes back to the tx.
+            telegramLogMessageRepository.save(
+                transaction.householdId,
+                user.chatId,
+                messageId,
+                transaction.transactionId,
+            )
         }
     }
 
@@ -410,13 +422,42 @@ class CategorizationBot(
             bot.execute(AnswerCallbackQuery(cq.id()).text("Bad callback"))
             return
         }
-        onDecision(parsed.txId, parsed.decision)
-        val message = cq.message()
-        if (message != null) {
-            bot.execute(EditMessageReplyMarkup(chatId, message.messageId()))
+
+        // First-wins: if another household member already decided on this transaction, this tap
+        // is a no-op — the decision is final. Strip this user's stale keyboard so they can't tap
+        // again and answer the callback with a friendly toast.
+        val existingStatus = transactionStatusRepository.findByTransactionId(parsed.txId)
+        if (existingStatus == TransactionStatus.EXECUTED || existingStatus == TransactionStatus.IGNORED) {
+            val message = cq.message()
+            if (message != null) {
+                bot.execute(EditMessageReplyMarkup(chatId, message.messageId()))
+            }
+            bot.execute(AnswerCallbackQuery(cq.id()).text("Уже категоризовано"))
+            return
         }
+
+        onDecision(parsed.txId, parsed.decision)
+
+        // Remove keyboards from ALL household members' copies of this prompt, not just the one
+        // who tapped. Otherwise other members still see a live keyboard pointing at a transaction
+        // that's already been merged into the sheet → tapping it would double-count.
+        clearKeyboardsForTx(parsed.txId)
+
         bot.execute(AnswerCallbackQuery(cq.id()).text("Saved"))
         sendLogForDecision(parsed.txId, parsed.decision)
+    }
+
+    private fun clearKeyboardsForTx(txId: String) {
+        val prompts = telegramLogMessageRepository.findAllByTransactionId(txId)
+        for (prompt in prompts) {
+            try {
+                bot.execute(EditMessageReplyMarkup(prompt.chatId, prompt.messageId.toInt()))
+            } catch (e: Exception) {
+                // Telegram returns 400 «message is not modified» when the keyboard is already gone,
+                // or «message to edit not found» if the user deleted their copy. Both are fine.
+                println("Could not clear keyboard on chat=${prompt.chatId} msg=${prompt.messageId}: ${e.message}")
+            }
+        }
     }
 
     private fun handleSaveKeywordCallback(
