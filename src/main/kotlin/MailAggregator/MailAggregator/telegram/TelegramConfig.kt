@@ -13,6 +13,7 @@ import MailAggregator.MailAggregator.household.repository.InviteTokenRepository
 import MailAggregator.MailAggregator.household.usecase.AddBankAccountUseCase
 import MailAggregator.MailAggregator.household.usecase.CreateHouseholdUseCase
 import MailAggregator.MailAggregator.household.usecase.JoinHouseholdUseCase
+import MailAggregator.MailAggregator.spreadsheet.Authentication
 import MailAggregator.MailAggregator.telegram.repository.TelegramLogMessageRepository
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.MessageSource
@@ -37,6 +38,7 @@ class TelegramConfig {
         addBankAccountUseCase: AddBankAccountUseCase,
         addCashTransactionUseCase: AddCashTransactionUseCase,
         inviteTokenRepository: InviteTokenRepository,
+        authentication: Authentication,
         messageSource: MessageSource,
         @Value("\${telegram.bot-token}") botToken: String,
     ) = CategorizationBot(
@@ -54,6 +56,7 @@ class TelegramConfig {
         addBankAccountUseCase = addBankAccountUseCase,
         addCashTransactionUseCase = addCashTransactionUseCase,
         inviteTokenRepository = inviteTokenRepository,
+        authentication = authentication,
         messageSource = messageSource,
         onDecision = { transactionId, decision ->
             handleTelegramResponseUseCase(transactionId, decision)
