@@ -264,7 +264,7 @@ class CategorizationBot(
             }
 
             if (replyTo != null && replyTo.from()?.isBot == true) {
-                handleCommentReply(chatId, replyTo.messageId().toLong(), text)
+                handleCommentReply(msg, replyTo.messageId().toLong(), text)
                 return
             }
 
@@ -573,23 +573,24 @@ class CategorizationBot(
 
     // ----- Reply handling (comment / Сохранить) -----
 
-    private fun handleCommentReply(chatId: Long, replyToMessageId: Long, text: String) {
+    private fun handleCommentReply(msg: Message, replyToMessageId: Long, text: String) {
         if (text.isBlank()) return
 
         if (text.trim().equals(saveKeywordTrigger, ignoreCase = true)) {
-            promptSaveKeywordCategory(chatId, replyToMessageId)
+            promptSaveKeywordCategory(msg.chat().id(), replyToMessageId)
             return
         }
 
         val saved = try {
-            handleTelegramCommentUseCase(chatId, replyToMessageId, text)
+            handleTelegramCommentUseCase(msg.chat().id(), replyToMessageId, text)
         } catch (e: Exception) {
             println("Failed to save Telegram comment: ${e.message}")
-            bot.execute(SendMessage(chatId, t("comment.saveError")))
+            reply(msg, t("comment.saveError"))
             return
         }
-        val reply = if (saved) t("comment.saved") else t("comment.notFound")
-        bot.execute(SendMessage(chatId, reply))
+        // Thread the ack under the user's actual comment so the chat keeps a clean
+        // «commented → ✓ saved» visual chain.
+        reply(msg, if (saved) t("comment.saved") else t("comment.notFound"))
     }
 
     private fun promptSaveKeywordCategory(chatId: Long, replyToMessageId: Long) {
