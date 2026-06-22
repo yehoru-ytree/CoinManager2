@@ -19,6 +19,7 @@ import MailAggregator.MailAggregator.bank.Transaction
 import MailAggregator.MailAggregator.bank.TransactionStatus
 import MailAggregator.MailAggregator.bank.repository.TransactionRepository
 import MailAggregator.MailAggregator.bank.repository.TransactionStatusRepository
+import MailAggregator.MailAggregator.spreadsheet.Authentication
 import MailAggregator.MailAggregator.telegram.model.CategorizationRequest
 import MailAggregator.MailAggregator.telegram.repository.TelegramLogMessageRepository
 import com.pengrad.telegrambot.TelegramBot
@@ -54,6 +55,7 @@ class CategorizationBot(
     private val addBankAccountUseCase: AddBankAccountUseCase,
     private val addCashTransactionUseCase: AddCashTransactionUseCase,
     private val inviteTokenRepository: InviteTokenRepository,
+    private val authentication: Authentication,
     private val messageSource: MessageSource,
     private val zoneId: ZoneId = TIME_ZONE,
     private val onDecision: (txId: String, decision: Decision) -> Unit,
@@ -352,7 +354,10 @@ class CategorizationBot(
                 }
                 createHouseholdStates.remove(chatId)
                 when (result) {
-                    is CreateHouseholdUseCase.Result.Created -> reply(msg, t("createHousehold.success", addCardTrigger))
+                    is CreateHouseholdUseCase.Result.Created -> reply(
+                        msg,
+                        t("createHousehold.success", addCardTrigger, authentication.serviceAccountEmail),
+                    )
                     CreateHouseholdUseCase.Result.AlreadyInHousehold -> reply(msg, t("flow.alreadyInHousehold"))
                 }
             }
