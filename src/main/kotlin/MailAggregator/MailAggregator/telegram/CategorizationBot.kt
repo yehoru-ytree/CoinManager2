@@ -604,6 +604,13 @@ class CategorizationBot(
             bot.execute(SendMessage(chatId, t("savekw.txDbMissing")))
             return
         }
+        if (tx.isCash) {
+            // Cash entries all share description «Наличка» — saving it as a keyword would
+            // pollute the category's regex list without ever matching anything useful (cash flow
+            // bypasses CategorizeExpenseUseCase entirely).
+            bot.execute(SendMessage(chatId, t("savekw.cashRejected")))
+            return
+        }
         val description = tx.description.trim()
         if (description.isEmpty()) {
             bot.execute(SendMessage(chatId, t("savekw.emptyDescription")))
