@@ -44,6 +44,19 @@ class CategorizationBot(
     private val bot = TelegramBot(token)
     private val addCategoryStates = java.util.concurrent.ConcurrentHashMap<Long, AddCategoryState>()
 
+    // Input-matching values, loaded once from messages.properties. Lazy so they read the bundle
+    // after Spring has finished wiring `messageSource`, not during property initialization.
+    private val saveKeywordTrigger: String by lazy { t("trigger.save") }
+    private val addCategoryTrigger: String by lazy { t("trigger.addCategory") }
+    private val cancelTrigger: String by lazy { t("trigger.cancel") }
+    private val emptyKeywordsTrigger: String by lazy { t("trigger.emptyKeywords") }
+    private val helpTriggers: Set<String> by lazy {
+        t("trigger.help").split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
+    }
+    private val namePattern: Regex by lazy { Regex(t("validation.namePattern")) }
+    private val priorityMin: Int by lazy { t("validation.priority.min").toInt() }
+    private val priorityMax: Int by lazy { t("validation.priority.max").toInt() }
+
     @PostConstruct
     fun startLongPolling() {
         bot.setUpdatesListener({ updates ->
@@ -88,7 +101,7 @@ class CategorizationBot(
 
             // Mid-flow cancel: a reply with "Забей" to any bot message kills the flow.
             if (state != null && replyTo != null && replyTo.from()?.isBot == true &&
-                text.trim().equals(CANCEL_TRIGGER, ignoreCase = true)
+                text.trim().equals(cancelTrigger, ignoreCase = true)
             ) {
                 cancelAddCategoryFlow(chatId, msg)
                 return
@@ -101,7 +114,7 @@ class CategorizationBot(
             }
 
             // Trigger phrase as a plain (non-reply) message — restarts the flow if one is running.
-            if (replyTo == null && text.trim().equals(ADD_CATEGORY_TRIGGER, ignoreCase = true)) {
+            if (replyTo == null && text.trim().equals(addCategoryTrigger, ignoreCase = true)) {
                 if (state != null) {
                     addCategoryStates.remove(chatId)
                     reply(msg, t("flow.restarted"))
@@ -117,7 +130,7 @@ class CategorizationBot(
             }
 
             // Explicit help command.
-            if (replyTo == null && text.trim().lowercase() in HELP_TRIGGERS) {
+            if (replyTo == null && text.trim().lowercase() in helpTriggers) {
                 sendHelp(msg)
                 return
             }
@@ -219,7 +232,7 @@ class CategorizationBot(
     private fun handleCommentReply(chatId: Long, replyToMessageId: Long, text: String) {
         if (text.isBlank()) return
 
-        if (text.trim().equals(SAVE_KEYWORD_TRIGGER, ignoreCase = true)) {
+        if (text.trim().equals(saveKeywordTrigger, ignoreCase = true)) {
             promptSaveKeywordCategory(chatId, replyToMessageId)
             return
         }
@@ -267,7 +280,7 @@ class CategorizationBot(
     }
 
     private fun startAddCategoryFlow(chatId: Long, msg: Message) {
-        val promptId = reply(msg, t("flow.start", CANCEL_TRIGGER)) ?: return
+        val promptId = reply(msg, t("flow.start", cancelTrigger)) ?: return
         addCategoryStates[chatId] = AddCategoryState.AwaitingName(promptId)
     }
 
@@ -287,7 +300,7 @@ class CategorizationBot(
     }
 
     private fun handleNameStep(chatId: Long, msg: Message, name: String) {
-        if (!name.matches(NAME_PATTERN)) {
+        if (!name.matches(namePattern)) {
             val promptId = reply(msg, t("flow.name.bad")) ?: return
             addCategoryStates[chatId] = AddCategoryState.AwaitingName(promptId)
             return
@@ -312,7 +325,7 @@ class CategorizationBot(
             addCategoryStates[chatId] = prev.copy(lastPromptMessageId = promptId)
             return
         }
-        val promptId = reply(msg, t("flow.priority.prompt", PRIORITY_MIN, PRIORITY_MAX)) ?: return
+        val promptId = reply(msg, t("flow.priority.prompt", priorityMin, priorityMax)) ?: return
         addCategoryStates[chatId] = AddCategoryState.AwaitingPriority(promptId, prev.name, displayName)
     }
 
@@ -323,12 +336,12 @@ class CategorizationBot(
         prev: AddCategoryState.AwaitingPriority,
     ) {
         val priority = priorityRaw.toIntOrNull()
-        if (priority == null || priority !in PRIORITY_MIN..PRIORITY_MAX) {
-            val promptId = reply(msg, t("flow.priority.bad", PRIORITY_MIN, PRIORITY_MAX)) ?: return
+        if (priority == null || priority !in priorityMin..priorityMax) {
+            val promptId = reply(msg, t("flow.priority.bad", priorityMin, priorityMax)) ?: return
             addCategoryStates[chatId] = prev.copy(lastPromptMessageId = promptId)
             return
         }
-        val promptId = reply(msg, t("flow.keywords.prompt", EMPTY_KEYWORDS_TRIGGER)) ?: return
+        val promptId = reply(msg, t("flow.keywords.prompt", emptyKeywordsTrigger)) ?: return
         addCategoryStates[chatId] = AddCategoryState.AwaitingKeywords(promptId, prev.name, prev.displayName, priority)
     }
 
@@ -338,7 +351,7 @@ class CategorizationBot(
         keywordsRaw: String,
         prev: AddCategoryState.AwaitingKeywords,
     ) {
-        val keywords = if (keywordsRaw == EMPTY_KEYWORDS_TRIGGER) {
+        val keywords = if (keywordsRaw == emptyKeywordsTrigger) {
             emptyList()
         } else {
             keywordsRaw.split(',').map { it.trim() }.filter { it.isNotEmpty() }
@@ -361,7 +374,7 @@ class CategorizationBot(
     }
 
     private fun sendHelp(msg: Message) {
-        reply(msg, t("help"))
+        reply(msg, t("help", addCategoryTrigger, cancelTrigger, saveKeywordTrigger))
     }
 
     private fun reply(msg: Message, text: String): Int? {
@@ -463,14 +476,6 @@ class CategorizationBot(
     }
 
     companion object {
-        private const val SAVE_KEYWORD_TRIGGER = "Сохранить"
-        private const val ADD_CATEGORY_TRIGGER = "Добавить категорию"
-        private const val CANCEL_TRIGGER = "Забей"
-        private const val EMPTY_KEYWORDS_TRIGGER = "-"
-        private const val PRIORITY_MIN = 1
-        private const val PRIORITY_MAX = 100
-        private val NAME_PATTERN = Regex("[A-Z_]+")
-        private val HELP_TRIGGERS = setOf("помощь", "/help", "help", "/?", "?")
         private val DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
         private val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
 
