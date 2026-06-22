@@ -4,6 +4,7 @@ import java.util.UUID
 
 data class Category(
     val id: UUID,
+    val householdId: UUID,
     val name: String,
     val displayName: String,
     val sheetRow: Int,

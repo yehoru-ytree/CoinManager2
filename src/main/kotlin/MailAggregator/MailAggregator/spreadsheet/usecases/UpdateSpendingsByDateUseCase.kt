@@ -2,6 +2,7 @@ package MailAggregator.MailAggregator.spreadsheet.usecases
 
 import MailAggregator.MailAggregator.common.Month
 import MailAggregator.MailAggregator.common.repository.CategoryRepository
+import MailAggregator.MailAggregator.household.Household
 import MailAggregator.MailAggregator.spreadsheet.usecase.VerifyMonthSheetExistsUseCase
 import MailAggregator.MailAggregator.spreadsheet.util.ExcelUtil
 import MailAggregator.MailAggregator.spreadsheet.util.SheetRequester
@@ -10,7 +11,6 @@ import java.util.UUID
 
 class UpdateSpendingsByDateUseCase(
     private val sheetRequester: SheetRequester,
-    private val sheetId: String,
     private val verifyMonthSheetExistsUseCase: VerifyMonthSheetExistsUseCase,
     private val categoryRepository: CategoryRepository,
 ) {
@@ -18,15 +18,15 @@ class UpdateSpendingsByDateUseCase(
         const val START_ROW = 5
     }
 
-    operator fun invoke(date: LocalDate, data: Map<UUID, Double>) {
+    operator fun invoke(household: Household, date: LocalDate, data: Map<UUID, Double>) {
         val month = Month.fromIndex(date.month.value)
         val sheetName = "${month.displayName} ${date.year}"
 
-        verifyMonthSheetExistsUseCase(sheetName)
+        verifyMonthSheetExistsUseCase(household, sheetName)
 
         val columnName = ExcelUtil.toColumnName(date.dayOfMonth)
 
-        val categories = categoryRepository.findAll()
+        val categories = categoryRepository.findAll(household.id)
         val maxSheetRow = categories.maxOf { it.sheetRow }
         val byUuid = categories.associateBy { it.id }
 
@@ -42,6 +42,6 @@ class UpdateSpendingsByDateUseCase(
         val rows: List<List<Any>> =
             List(rowsCount) { idx -> listOf(byOffset[idx] ?: "") }
 
-        sheetRequester.updateTableRange(sheetId, range, rows)
+        sheetRequester.updateTableRange(household.sheetId, range, rows)
     }
 }

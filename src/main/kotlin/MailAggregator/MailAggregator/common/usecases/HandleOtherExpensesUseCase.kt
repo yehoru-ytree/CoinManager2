@@ -10,22 +10,23 @@ import java.time.Instant
 
 class HandleOtherExpensesUseCase(
     val telegramBot: CategorizationBot,
-    val transactionStatusRepository: TransactionStatusRepository
+    val transactionStatusRepository: TransactionStatusRepository,
 ) {
     operator fun invoke(uncategorizedTransactions: List<MonoTransaction>) {
         for (transaction in uncategorizedTransactions) {
             telegramBot.sendTx(
                 CategorizationRequest(
                     transactionId = transaction.id,
-                    amount = (transaction.raw.amount/100.0).toString()+" ₴",
+                    householdId = transaction.householdId,
+                    amount = (transaction.raw.amount / 100.0).toString() + " ₴",
                     description = transaction.raw.description,
                     transactionTime = Instant.ofEpochSecond(transaction.raw.time)
                         .atZone(TIME_ZONE)
-                        .toLocalDateTime().toString()
-                )
+                        .toLocalDateTime().toString(),
+                ),
             )
             transactionStatusRepository.save(
-                mapOf(transaction.id to TransactionStatus.PENDING_APPROVAL)
+                mapOf(transaction.id to TransactionStatus.PENDING_APPROVAL),
             )
         }
     }

@@ -9,10 +9,11 @@ import java.util.UUID
 class TelegramLogMessageRepository(
     private val jpa: TelegramLogMessageJpaRepository,
 ) {
-    fun save(chatId: Long, messageId: Long, transactionId: String) {
+    fun save(householdId: UUID, chatId: Long, messageId: Long, transactionId: String) {
         jpa.save(
             TelegramLogMessageJpaEntity(
                 id = UUID.randomUUID(),
+                householdId = householdId,
                 chatId = chatId,
                 messageId = messageId,
                 transactionId = transactionId,

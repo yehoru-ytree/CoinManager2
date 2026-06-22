@@ -12,6 +12,9 @@ data class TransactionJpaEntity(
     @Id
     val id: String,
 
+    @Column(name = "household_id", nullable = false)
+    val householdId: UUID,
+
     @Column(name = "created_at", nullable = false)
     val createdAt: Long,
 

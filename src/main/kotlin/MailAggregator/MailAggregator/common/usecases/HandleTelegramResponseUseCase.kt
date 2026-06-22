@@ -1,6 +1,7 @@
 package MailAggregator.MailAggregator.common.usecases
 
 import MailAggregator.MailAggregator.common.config.Config.Companion.TIME_ZONE
+import MailAggregator.MailAggregator.household.repository.HouseholdRepository
 import MailAggregator.MailAggregator.monobank.application.TransactionStatus
 import MailAggregator.MailAggregator.monobank.repository.TransactionRepository
 import MailAggregator.MailAggregator.monobank.repository.TransactionStatusRepository
@@ -12,25 +13,28 @@ class HandleTelegramResponseUseCase(
     val transactionRepository: TransactionRepository,
     val transactionStatusRepository: TransactionStatusRepository,
     val mergeSpendingsByDateUseCase: MergeSpendingsByDateUseCase,
+    val householdRepository: HouseholdRepository,
 ) {
 
     operator fun invoke(transactionId: String, decision: CategorizationBot.Decision) {
         if (decision is CategorizationBot.Decision.Ignore) {
             transactionStatusRepository.save(
-                mapOf(transactionId to TransactionStatus.IGNORED)
+                mapOf(transactionId to TransactionStatus.IGNORED),
             )
         } else if (decision is CategorizationBot.Decision.Category) {
-            val transaction = transactionRepository.get(transactionId) ?: return
+            val transaction = transactionRepository.get(transactionId).orElse(null) ?: return
+            val household = householdRepository.findHousehold(transaction.householdId) ?: return
 
-            val date = Instant.ofEpochSecond(transaction.get().raw.time)
+            val date = Instant.ofEpochSecond(transaction.raw.time)
                 .atZone(TIME_ZONE)
                 .toLocalDate()
 
             mergeSpendingsByDateUseCase(
+                household = household,
                 date = date,
                 newExpenses = mapOf(
-                    decision.categoryId to transaction.get().raw.amount.toDouble() * -1 / 100.0
-                )
+                    decision.categoryId to transaction.raw.amount.toDouble() * -1 / 100.0,
+                ),
             )
 
             transactionStatusRepository.save(mapOf(transactionId to TransactionStatus.EXECUTED))

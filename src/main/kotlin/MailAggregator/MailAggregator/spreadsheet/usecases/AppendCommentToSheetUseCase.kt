@@ -1,6 +1,7 @@
 package MailAggregator.MailAggregator.spreadsheet.usecases
 
 import MailAggregator.MailAggregator.common.Month
+import MailAggregator.MailAggregator.household.Household
 import MailAggregator.MailAggregator.spreadsheet.usecase.VerifyMonthSheetExistsUseCase
 import MailAggregator.MailAggregator.spreadsheet.util.ExcelUtil
 import MailAggregator.MailAggregator.spreadsheet.util.SheetRequester
@@ -8,7 +9,6 @@ import java.time.LocalDate
 
 class AppendCommentToSheetUseCase(
     private val sheetRequester: SheetRequester,
-    private val sheetId: String,
     private val verifyMonthSheetExistsUseCase: VerifyMonthSheetExistsUseCase,
 ) {
     companion object {
@@ -16,28 +16,28 @@ class AppendCommentToSheetUseCase(
         private const val SEPARATOR = "; "
     }
 
-    operator fun invoke(date: LocalDate, comment: String) {
+    operator fun invoke(household: Household, date: LocalDate, comment: String) {
         val sanitized = comment.replace(Regex("[\r\n]+"), " ").trim()
         if (sanitized.isEmpty()) return
 
         val month = Month.fromIndex(date.month.value)
         val sheetName = "${month.displayName} ${date.year}"
-        verifyMonthSheetExistsUseCase(sheetName)
+        verifyMonthSheetExistsUseCase(household, sheetName)
 
         val columnName = ExcelUtil.toColumnName(date.dayOfMonth)
         val cellRange = "$columnName$COMMENT_ROW"
 
-        val existing = readCell(sheetName, cellRange)
+        val existing = readCell(household.sheetId, sheetName, cellRange)
         val newValue = if (existing.isBlank()) sanitized else "$existing$SEPARATOR$sanitized"
 
         sheetRequester.updateTableRange(
-            sheetId,
+            household.sheetId,
             "'$sheetName'!$cellRange",
             listOf(listOf(newValue)),
         )
     }
 
-    private fun readCell(sheetName: String, cellRange: String): String {
+    private fun readCell(sheetId: String, sheetName: String, cellRange: String): String {
         val sheet = sheetRequester
             .getSpreadSheetByRange(sheetId, cellRange, sheetName)
             .sheets[0]

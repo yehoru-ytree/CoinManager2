@@ -5,6 +5,9 @@ import MailAggregator.MailAggregator.common.repository.CategoryRepository
 import MailAggregator.MailAggregator.common.usecases.CategorizeExpenseUseCase
 import MailAggregator.MailAggregator.common.usecases.ExecuteTransactionsUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleOtherExpensesUseCase
+import MailAggregator.MailAggregator.household.Household
+import MailAggregator.MailAggregator.household.MonobankAccount
+import MailAggregator.MailAggregator.household.repository.HouseholdRepository
 import MailAggregator.MailAggregator.monobank.api.MonobankApi
 import MailAggregator.MailAggregator.monobank.application.MonoTransaction
 import MailAggregator.MailAggregator.telegram.CategorizationBot
@@ -21,33 +24,39 @@ class ProcessIncomingMonobankTransactionsUseCase(
     val executeTransactionsUseCase: ExecuteTransactionsUseCase,
     val handleOtherExpensesUseCase: HandleOtherExpensesUseCase,
     val categoryRepository: CategoryRepository,
+    val householdRepository: HouseholdRepository,
     val categorizationBot: CategorizationBot,
-    val accountId: String,
     val statementWindowMinutes: Long,
 ) {
     operator fun invoke() {
         val to = Instant.now()
         val from = to.minusSeconds(statementWindowMinutes * 60)
 
-
-        val monoTransactions = try {
-            monobankApi.getStatements(accountId, from, to)
-                .filter { it.raw.amount < 0 } //TODO somehow manage in future
-
-        } catch (e: Exception) {
-            println("Failed to fetch transactions from Monobank API: ${e.message}")
-            return
+        for (account in householdRepository.findAllMonobankAccounts()) {
+            try {
+                processAccount(account, from, to)
+            } catch (e: Exception) {
+                println("Failed to process Monobank account ${account.accountId}: ${e.message}")
+            }
         }
+    }
+
+    private fun processAccount(account: MonobankAccount, from: Instant, to: Instant) {
+        val user = householdRepository.findUserById(account.userId) ?: return
+        val household = householdRepository.findHousehold(user.householdId) ?: return
+
+        val monoTransactions = monobankApi.getStatements(account.token, account.accountId, household.id, from, to)
+            .filter { it.raw.amount < 0 } // TODO income flows in future
 
         val newTransactions = handleNotProcessedTransactionsUseCase(monoTransactions)
+        if (newTransactions.isEmpty()) return
 
+        val otherCategoryId = categoryRepository.findOther(household.id).id
+        val uncategorizedExpenses = mutableListOf<String>()
         val newTransactionsByDate = groupByLocalDate(newTransactions)
 
-        val otherCategoryId = categoryRepository.findOther().id
-        val uncategorizedExpenses = mutableListOf<String>()
-
         for (day in newTransactionsByDate) {
-            val categorizedExpenses = categorizeExpenseUseCase(day.value)
+            val categorizedExpenses = categorizeExpenseUseCase(household.id, day.value)
 
             uncategorizedExpenses.addAll(
                 categorizedExpenses.filter { it.value == otherCategoryId }.keys,
@@ -59,13 +68,14 @@ class ProcessIncomingMonobankTransactionsUseCase(
             )
 
             try {
-                mergeSpendingsByDateUseCase(day.key, mergedSpendings)
+                mergeSpendingsByDateUseCase(household, day.key, mergedSpendings)
             } catch (e: Exception) {
                 println("Failed to update spreadsheet for date ${day.key}: ${e.message}")
                 continue
             }
 
             sendAutoCategorizedLogs(
+                household,
                 day.value,
                 categorizedExpenses.filterValues { it != otherCategoryId },
             )
@@ -79,6 +89,7 @@ class ProcessIncomingMonobankTransactionsUseCase(
     }
 
     private fun sendAutoCategorizedLogs(
+        household: Household,
         transactions: List<MonoTransaction>,
         categorizedExpenses: Map<String, UUID>,
     ) {
@@ -87,7 +98,7 @@ class ProcessIncomingMonobankTransactionsUseCase(
             val tx = txById[txId] ?: return@forEach
             val category = categoryRepository.findById(categoryId) ?: return@forEach
             try {
-                categorizationBot.sendLog(tx, category)
+                categorizationBot.sendLog(household, tx, category)
             } catch (e: Exception) {
                 println("Failed to send Telegram log for transaction $txId: ${e.message}")
             }
@@ -95,7 +106,7 @@ class ProcessIncomingMonobankTransactionsUseCase(
     }
 
     fun mergeExpenses(
-        categorizedExpenses: Map<String, UUID>,   // txId -> categoryId
+        categorizedExpenses: Map<String, UUID>,
         newTransactions: List<MonoTransaction>,
     ): Map<UUID, Double> =
         newTransactions
@@ -113,7 +124,7 @@ class ProcessIncomingMonobankTransactionsUseCase(
         zoneId: ZoneId = TIME_ZONE,
     ): Map<LocalDate, List<MonoTransaction>> =
         monoTransactions.groupBy { tx ->
-            Instant.ofEpochSecond(tx.raw.time)   // raw.time = Unix seconds
+            Instant.ofEpochSecond(tx.raw.time)
                 .atZone(zoneId)
                 .toLocalDate()
         }

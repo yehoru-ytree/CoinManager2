@@ -16,6 +16,9 @@ data class CategoryJpaEntity(
     @Id
     val id: UUID,
 
+    @Column(name = "household_id", nullable = false)
+    val householdId: UUID,
+
     @Column(name = "name", nullable = false)
     val name: String,
 
