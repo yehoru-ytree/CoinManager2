@@ -103,9 +103,19 @@ class CategorizationBot(
             appendLine("$date $time  −$amount $currency")
             append(tail)
         }
+
+        // For manually categorised tx the prompt with the keyboard was sent first (by sendTx) and
+        // recorded here. Thread the log under each user's copy of that prompt so the chat keeps a
+        // visual «question → answer» history. Auto-categorised transactions have no prior prompt;
+        // those rows just don't exist yet and the log goes out as a fresh message.
+        val priorMessages = telegramLogMessageRepository.findAllByTransactionId(transaction.id)
+            .associateBy { it.chatId }
+
         val users = householdRepository.findUsersInHousehold(household.id)
         for (user in users) {
-            val response = bot.execute(SendMessage(user.chatId, text)) ?: continue
+            val send = SendMessage(user.chatId, text)
+            priorMessages[user.chatId]?.let { send.replyParameters(ReplyParameters(it.messageId.toInt())) }
+            val response = bot.execute(send) ?: continue
             val messageId = response.message()?.messageId()?.toLong() ?: continue
             telegramLogMessageRepository.save(household.id, user.chatId, messageId, transaction.id)
         }
@@ -406,6 +416,11 @@ class CategorizationBot(
                 }
                 addCardStates.remove(chatId)
                 reply(msg, "✓ Привязал карту. Транзакции скоро начнут прилетать.")
+                broadcastInfo(
+                    user.householdId,
+                    excludeChatId = chatId,
+                    text = "ℹ️ ${displayNameOf(msg)} привязал(а) новую карту. Её транзакции скоро начнут прилетать в общий лог.",
+                )
             }
         }
     }
@@ -660,6 +675,11 @@ class CategorizationBot(
             msg,
             "✓ Создал «${category.name}» (${category.displayName}) на sheet_row=${category.sheetRow}.",
         )
+        broadcastInfo(
+            household.id,
+            excludeChatId = chatId,
+            text = "ℹ️ ${displayNameOf(msg)} добавил(а) новую категорию «${category.displayName}».",
+        )
     }
 
     // ----- Help & utilities -----
@@ -675,6 +695,25 @@ class CategorizationBot(
         )
         return response?.message()?.messageId()
     }
+
+    /** Send a plain info message to every member of [householdId] *except* [excludeChatId].
+     *  Used to let other household members know that a category was added or a card was linked. */
+    private fun broadcastInfo(householdId: UUID, excludeChatId: Long, text: String) {
+        householdRepository.findUsersInHousehold(householdId)
+            .filter { it.chatId != excludeChatId }
+            .forEach { other ->
+                try {
+                    bot.execute(SendMessage(other.chatId, text))
+                } catch (e: Exception) {
+                    println("Failed to broadcast to chat=${other.chatId}: ${e.message}")
+                }
+            }
+    }
+
+    private fun displayNameOf(msg: Message): String =
+        msg.from()?.firstName()?.takeIf { it.isNotBlank() }
+            ?: msg.from()?.username()?.takeIf { it.isNotBlank() }
+            ?: "Кто-то"
 
     private fun buildKeyboard(householdId: UUID, transactionId: String): InlineKeyboardMarkup {
         val all = categoryRepository.findAll(householdId)
