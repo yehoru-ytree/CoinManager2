@@ -57,7 +57,7 @@ class ProcessIncomingBankTransactionsUseCase(
         val user = householdRepository.findUserById(account.userId) ?: return
         val household = householdRepository.findHousehold(user.householdId) ?: return
 
-        val transactions = api.getStatements(account.token, account.accountId, household.id, from, to)
+        val transactions = api.getStatements(account, household.id, from, to)
             .filter { it.amount < 0 } // TODO income flows in future
 
         val newTransactions = handleNotProcessedTransactionsUseCase(transactions)

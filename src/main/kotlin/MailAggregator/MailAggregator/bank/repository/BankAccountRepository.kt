@@ -24,6 +24,7 @@ class BankAccountRepository(
         bankType = bankType.name,
         token = token,
         accountId = accountId,
+        clientId = clientId,
     )
 
     private fun BankAccountJpaEntity.toDomain() = BankAccount(
@@ -32,5 +33,6 @@ class BankAccountRepository(
         bankType = BankType.fromString(bankType),
         token = token,
         accountId = accountId,
+        clientId = clientId,
     )
 }

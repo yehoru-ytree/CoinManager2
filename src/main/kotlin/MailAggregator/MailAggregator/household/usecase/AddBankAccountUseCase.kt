@@ -9,7 +9,13 @@ import java.util.UUID
 class AddBankAccountUseCase(
     private val bankAccountRepository: BankAccountRepository,
 ) {
-    fun add(user: BotUser, bankType: BankType, token: String, accountId: String): BankAccount =
+    fun add(
+        user: BotUser,
+        bankType: BankType,
+        token: String,
+        accountId: String,
+        clientId: String? = null,
+    ): BankAccount =
         bankAccountRepository.insert(
             BankAccount(
                 id = UUID.randomUUID(),
@@ -17,6 +23,7 @@ class AddBankAccountUseCase(
                 bankType = bankType,
                 token = token,
                 accountId = accountId,
+                clientId = clientId,
             ),
         )
 }

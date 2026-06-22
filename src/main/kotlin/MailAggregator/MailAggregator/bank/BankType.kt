@@ -4,6 +4,7 @@ package MailAggregator.MailAggregator.bank
  *  more banks (e.g. PRIVATBANK). */
 enum class BankType {
     MONOBANK,
+    PRIVATBANK,
     ;
 
     companion object {

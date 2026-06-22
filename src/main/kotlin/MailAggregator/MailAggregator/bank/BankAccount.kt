@@ -8,4 +8,5 @@ data class BankAccount(
     val bankType: BankType,
     val token: String,
     val accountId: String,
+    val clientId: String? = null,
 )
