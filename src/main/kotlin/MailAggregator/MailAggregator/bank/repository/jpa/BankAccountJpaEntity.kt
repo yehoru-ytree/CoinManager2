@@ -23,4 +23,7 @@ data class BankAccountJpaEntity(
 
     @Column(name = "account_id", nullable = false)
     val accountId: String,
+
+    @Column(name = "client_id")
+    val clientId: String? = null,
 )

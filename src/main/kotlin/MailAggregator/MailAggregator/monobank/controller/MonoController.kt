@@ -52,7 +52,7 @@ class MonoController(
         val toInstant = to?.let(Instant::ofEpochSecond) ?: Instant.now()
         val fromInstant = from?.let(Instant::ofEpochSecond) ?: toInstant.minusSeconds(hours * 3600)
 
-        return monobankApi.getStatements(account.token, account.accountId, user.householdId, fromInstant, toInstant)
+        return monobankApi.getStatements(account, user.householdId, fromInstant, toInstant)
     }
 
     @PostMapping("/ingest")

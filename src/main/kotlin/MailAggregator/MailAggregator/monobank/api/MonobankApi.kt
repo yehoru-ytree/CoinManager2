@@ -1,5 +1,6 @@
 package MailAggregator.MailAggregator.monobank.api
 
+import MailAggregator.MailAggregator.bank.BankAccount
 import MailAggregator.MailAggregator.bank.BankApi
 import MailAggregator.MailAggregator.bank.BankType
 import MailAggregator.MailAggregator.bank.Transaction
@@ -33,8 +34,7 @@ class MonobankApi : BankApi {
             ?: MonoApiClientInfo()
 
     override fun getStatements(
-        token: String,
-        accountId: String,
+        account: BankAccount,
         householdId: UUID,
         from: Instant,
         to: Instant,
@@ -44,8 +44,8 @@ class MonobankApi : BankApi {
 
         return try {
             client.get()
-                .uri("/personal/statement/{accountId}/{from}/{to}", accountId, fromSec, toSec)
-                .header("X-Token", token)
+                .uri("/personal/statement/{accountId}/{from}/{to}", account.accountId, fromSec, toSec)
+                .header("X-Token", account.token)
                 .retrieve()
                 .body(TX_LIST)
                 ?.map { MonoStatementMapper.fromApi(it, householdId) }
