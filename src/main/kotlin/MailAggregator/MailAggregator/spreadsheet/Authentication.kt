@@ -6,6 +6,7 @@ import com.google.api.services.sheets.v4.Sheets
 import com.google.api.services.sheets.v4.SheetsScopes
 import com.google.auth.http.HttpCredentialsAdapter
 import com.google.auth.oauth2.GoogleCredentials
+import com.google.auth.oauth2.ServiceAccountCredentials
 import java.io.InputStream
 
 /**
@@ -19,6 +20,19 @@ class Authentication {
     private val DEFAULT_SCOPES = listOf(
         SheetsScopes.SPREADSHEETS
     )
+
+    /** Email of the service account that this app uses. Shown to users so they know which
+     *  address to share their Google Sheet with. */
+    val serviceAccountEmail: String by lazy { loadServiceAccountEmail() }
+
+    private fun loadServiceAccountEmail(): String {
+        val stream = Thread.currentThread().contextClassLoader
+            .getResourceAsStream("service-account.json")
+            ?: throw IllegalStateException("service-account.json not on classpath")
+        return stream.use { GoogleCredentials.fromStream(it) }
+            .let { (it as? ServiceAccountCredentials)?.clientEmail }
+            ?: throw IllegalStateException("service-account.json does not look like a service account credential")
+    }
 
     /** Build Sheets from a service account JSON input stream. */
     fun fromStream(
