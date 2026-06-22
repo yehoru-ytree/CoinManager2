@@ -32,9 +32,11 @@ import com.pengrad.telegrambot.request.AnswerCallbackQuery
 import com.pengrad.telegrambot.request.EditMessageReplyMarkup
 import com.pengrad.telegrambot.request.SendMessage
 import jakarta.annotation.PostConstruct
+import org.springframework.context.MessageSource
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 import java.util.UUID
 
 class CategorizationBot(
@@ -52,6 +54,7 @@ class CategorizationBot(
     private val addBankAccountUseCase: AddBankAccountUseCase,
     private val addCashTransactionUseCase: AddCashTransactionUseCase,
     private val inviteTokenRepository: InviteTokenRepository,
+    private val messageSource: MessageSource,
     private val zoneId: ZoneId = TIME_ZONE,
     private val onDecision: (txId: String, decision: Decision) -> Unit,
 ) {
@@ -60,6 +63,24 @@ class CategorizationBot(
     private val createHouseholdStates = java.util.concurrent.ConcurrentHashMap<Long, CreateHouseholdState>()
     private val addCardStates = java.util.concurrent.ConcurrentHashMap<Long, AddCardState>()
     private val cashEntryStates = java.util.concurrent.ConcurrentHashMap<Long, CashEntryState>()
+
+    // Input-matching values loaded once from messages.properties (lazy so they read the bundle
+    // after Spring has finished wiring `messageSource`, not during property initialization).
+    private val saveKeywordTrigger: String by lazy { t("trigger.save") }
+    private val addCategoryTrigger: String by lazy { t("trigger.addCategory") }
+    private val createHouseholdTrigger: String by lazy { t("trigger.createHousehold") }
+    private val addCardTrigger: String by lazy { t("trigger.addCard") }
+    private val cashTrigger: String by lazy { t("trigger.cash") }
+    private val inviteTrigger: String by lazy { t("trigger.invite") }
+    private val joinTrigger: String by lazy { t("trigger.join") }
+    private val cancelTrigger: String by lazy { t("trigger.cancel") }
+    private val emptyKeywordsTrigger: String by lazy { t("trigger.emptyKeywords") }
+    private val helpTriggers: Set<String> by lazy {
+        t("trigger.help").split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
+    }
+    private val namePattern: Regex by lazy { Regex(t("validation.namePattern")) }
+    private val priorityMin: Int by lazy { t("validation.priority.min").toInt() }
+    private val priorityMax: Int by lazy { t("validation.priority.max").toInt() }
 
     @PostConstruct
     fun startLongPolling() {
@@ -72,12 +93,13 @@ class CategorizationBot(
     }
 
     fun sendTx(transaction: CategorizationRequest) {
-        val text = buildString {
-            appendLine("🧾 ${transaction.description}")
-            appendLine("ID: ${transaction.transactionId}")
-            appendLine("Time: ${transaction.transactionTime}")
-            appendLine("Amount: ${transaction.amount}")
-        }
+        val text = t(
+            "tx.prompt",
+            transaction.description,
+            transaction.transactionId,
+            transaction.transactionTime,
+            transaction.amount,
+        )
         val keyboard = buildKeyboard(transaction.householdId, transaction.transactionId)
         val users = householdRepository.findUsersInHousehold(transaction.householdId)
         for (user in users) {
@@ -100,11 +122,11 @@ class CategorizationBot(
         val time = zoned.format(TIME_FORMAT)
         val amount = "%.2f".format(-transaction.amount.toDouble() / 100.0)
         val currency = currencyCode(transaction.currencyCode)
-        val tail = category?.let { "Категория: ${it.displayName}" } ?: "Игнорировано"
+        val tail = category?.let { t("log.tail.category", it.displayName) } ?: t("log.tail.ignored")
 
         val text = buildString {
-            appendLine("🧾 ${transaction.description}")
-            appendLine("$date $time  −$amount $currency")
+            appendLine(t("log.title", transaction.description))
+            appendLine(t("log.body", date, time, amount, currency))
             append(tail)
         }
 
@@ -134,7 +156,7 @@ class CategorizationBot(
             val replyTo = msg.replyToMessage()
 
             if (text == "/start") {
-                bot.execute(SendMessage(chatId, "OK. Your chatId=$chatId"))
+                bot.execute(SendMessage(chatId, t("bot.start.greeting", chatId)))
                 return
             }
 
@@ -146,18 +168,18 @@ class CategorizationBot(
                 return
             }
             if (createState != null && replyTo != null && replyTo.from()?.isBot == true &&
-                text.trim().equals(CANCEL_TRIGGER, ignoreCase = true)
+                text.trim().equals(cancelTrigger, ignoreCase = true)
             ) {
                 createHouseholdStates.remove(chatId)
-                reply(msg, "Окей, забил.")
+                reply(msg, t("flow.cancelled"))
                 return
             }
-            if (replyTo == null && text.trim().equals(CREATE_HOUSEHOLD_TRIGGER, ignoreCase = true)) {
+            if (replyTo == null && text.trim().equals(createHouseholdTrigger, ignoreCase = true)) {
                 resetAllFlows(chatId, msg, restarting = createState != null)
                 startCreateHouseholdFlow(chatId, msg)
                 return
             }
-            if (replyTo == null && text.trim().startsWith(JOIN_TRIGGER, ignoreCase = true)) {
+            if (replyTo == null && text.trim().startsWith(joinTrigger, ignoreCase = true)) {
                 handleJoinCommand(chatId, msg, text)
                 return
             }
@@ -166,16 +188,12 @@ class CategorizationBot(
 
             val user = householdRepository.findUserByChatId(chatId)
             if (user == null) {
-                if (replyTo == null && text.trim().lowercase() in HELP_TRIGGERS) {
+                if (replyTo == null && text.trim().lowercase() in helpTriggers) {
                     sendHelp(msg)
                     return
                 }
                 if (replyTo == null) {
-                    reply(
-                        msg,
-                        "Ты не зарегистрирован. Создай таблицу командой «$CREATE_HOUSEHOLD_TRIGGER» " +
-                            "или попроси кого-то прислать тебе «$JOIN_TRIGGER <код>». /help для деталей.",
-                    )
+                    reply(msg, t("bot.notRegistered", createHouseholdTrigger, joinTrigger))
                 }
                 return
             }
@@ -188,23 +206,23 @@ class CategorizationBot(
             val cashState = cashEntryStates[chatId]
 
             if (addState != null && replyTo != null && replyTo.from()?.isBot == true &&
-                text.trim().equals(CANCEL_TRIGGER, ignoreCase = true)
+                text.trim().equals(cancelTrigger, ignoreCase = true)
             ) {
                 cancelAddCategoryFlow(chatId, msg)
                 return
             }
             if (cardState != null && replyTo != null && replyTo.from()?.isBot == true &&
-                text.trim().equals(CANCEL_TRIGGER, ignoreCase = true)
+                text.trim().equals(cancelTrigger, ignoreCase = true)
             ) {
                 addCardStates.remove(chatId)
-                reply(msg, "Окей, забил.")
+                reply(msg, t("flow.cancelled"))
                 return
             }
             if (cashState != null && replyTo != null && replyTo.from()?.isBot == true &&
-                text.trim().equals(CANCEL_TRIGGER, ignoreCase = true)
+                text.trim().equals(cancelTrigger, ignoreCase = true)
             ) {
                 cashEntryStates.remove(chatId)
-                reply(msg, "Окей, забил.")
+                reply(msg, t("flow.cancelled"))
                 return
             }
 
@@ -223,22 +241,22 @@ class CategorizationBot(
 
             // ===== Plain-message triggers for registered users =====
 
-            if (replyTo == null && text.trim().equals(ADD_CATEGORY_TRIGGER, ignoreCase = true)) {
+            if (replyTo == null && text.trim().equals(addCategoryTrigger, ignoreCase = true)) {
                 resetAllFlows(chatId, msg, restarting = addState != null)
                 startAddCategoryFlow(chatId, msg)
                 return
             }
-            if (replyTo == null && text.trim().equals(ADD_CARD_TRIGGER, ignoreCase = true)) {
+            if (replyTo == null && text.trim().equals(addCardTrigger, ignoreCase = true)) {
                 resetAllFlows(chatId, msg, restarting = cardState != null)
                 startAddCardFlow(chatId, msg)
                 return
             }
-            if (replyTo == null && text.trim().equals(CASH_TRIGGER, ignoreCase = true)) {
+            if (replyTo == null && text.trim().equals(cashTrigger, ignoreCase = true)) {
                 resetAllFlows(chatId, msg, restarting = cashState != null)
                 startCashEntryFlow(chatId, msg)
                 return
             }
-            if (replyTo == null && text.trim().equals(INVITE_TRIGGER, ignoreCase = true)) {
+            if (replyTo == null && text.trim().equals(inviteTrigger, ignoreCase = true)) {
                 handleInviteCommand(msg, user)
                 return
             }
@@ -248,13 +266,13 @@ class CategorizationBot(
                 return
             }
 
-            if (replyTo == null && text.trim().lowercase() in HELP_TRIGGERS) {
+            if (replyTo == null && text.trim().lowercase() in helpTriggers) {
                 sendHelp(msg)
                 return
             }
 
             if (replyTo == null) {
-                reply(msg, "Не понял. Напиши «помощь» чтобы увидеть, что я умею.")
+                reply(msg, t("bot.unknown"))
                 return
             }
             return
@@ -264,7 +282,7 @@ class CategorizationBot(
         val chatId = cq.message()?.chat()?.id() ?: return
         val user = householdRepository.findUserByChatId(chatId)
         if (user == null) {
-            bot.execute(AnswerCallbackQuery(cq.id()).text("Not allowed"))
+            bot.execute(AnswerCallbackQuery(cq.id()).text(t("callback.notAllowed")))
             return
         }
 
@@ -272,7 +290,7 @@ class CategorizationBot(
         when (data.firstOrNull()) {
             'c' -> handleCategorizationCallback(cq, chatId, user, data)
             'k' -> handleSaveKeywordCallback(cq, chatId, user, data)
-            else -> bot.execute(AnswerCallbackQuery(cq.id()).text("Bad callback"))
+            else -> bot.execute(AnswerCallbackQuery(cq.id()).text(t("callback.badCallback")))
         }
     }
 
@@ -284,9 +302,9 @@ class CategorizationBot(
             addCardStates.remove(chatId) != null ||
             cashEntryStates.remove(chatId) != null
         if (hadFlow && restarting) {
-            reply(msg, "ℹ️ Старый флоу прерван, ничего не сохранено. Начинаю заново.")
+            reply(msg, t("flow.restart.startingNew"))
         } else if (hadFlow) {
-            reply(msg, "ℹ️ Старый флоу прерван, ничего не сохранено.")
+            reply(msg, t("flow.restart.continue"))
         }
     }
 
@@ -294,14 +312,10 @@ class CategorizationBot(
 
     private fun startCreateHouseholdFlow(chatId: Long, msg: Message) {
         if (householdRepository.findUserByChatId(chatId) != null) {
-            reply(msg, "Ты уже в household. Создавать новую нельзя.")
+            reply(msg, t("flow.alreadyInHousehold"))
             return
         }
-        val promptId = reply(
-            msg,
-            "Дай ID Google Sheet'а (тот длинный код из URL таблицы). " +
-                "На любом шаге ответь «$CANCEL_TRIGGER» чтобы выйти.",
-        ) ?: return
+        val promptId = reply(msg, t("createHousehold.start", cancelTrigger)) ?: return
         createHouseholdStates[chatId] = CreateHouseholdState.AwaitingSheetId(promptId)
     }
 
@@ -315,19 +329,16 @@ class CategorizationBot(
         when (state) {
             is CreateHouseholdState.AwaitingSheetId -> {
                 if (text.isEmpty()) {
-                    val promptId = reply(msg, "Пустое не подходит. Дай ID Google Sheet'а:") ?: return
+                    val promptId = reply(msg, t("createHousehold.emptySheetId")) ?: return
                     createHouseholdStates[chatId] = CreateHouseholdState.AwaitingSheetId(promptId)
                     return
                 }
-                val promptId = reply(
-                    msg,
-                    "Дай название template-листа (как называется лист, который служит шаблоном для месяцев, например «Февраль 2026»):",
-                ) ?: return
+                val promptId = reply(msg, t("createHousehold.askTemplate")) ?: return
                 createHouseholdStates[chatId] = CreateHouseholdState.AwaitingTemplateTitle(promptId, text)
             }
             is CreateHouseholdState.AwaitingTemplateTitle -> {
                 if (text.isEmpty()) {
-                    val promptId = reply(msg, "Пустое не подходит. Дай название template-листа:") ?: return
+                    val promptId = reply(msg, t("createHousehold.emptyTemplate")) ?: return
                     createHouseholdStates[chatId] = CreateHouseholdState.AwaitingTemplateTitle(promptId, state.sheetId)
                     return
                 }
@@ -336,21 +347,13 @@ class CategorizationBot(
                 } catch (e: Exception) {
                     println("Failed to create household for chat $chatId: ${e.message}")
                     createHouseholdStates.remove(chatId)
-                    reply(msg, "❌ Не получилось создать household: ${e.message}")
+                    reply(msg, t("createHousehold.failed", e.message ?: ""))
                     return
                 }
                 createHouseholdStates.remove(chatId)
                 when (result) {
-                    is CreateHouseholdUseCase.Result.Created -> reply(
-                        msg,
-                        "✓ Создал твою таблицу и засеял 23 категории по умолчанию.\n" +
-                            "Не забудь дать боту доступ — расшарь Google Sheet на email service-аккаунта " +
-                            "(он в service-account.json). Дальше — «$ADD_CARD_TRIGGER».",
-                    )
-                    CreateHouseholdUseCase.Result.AlreadyInHousehold -> reply(
-                        msg,
-                        "Ты уже в household. Создавать новую нельзя.",
-                    )
+                    is CreateHouseholdUseCase.Result.Created -> reply(msg, t("createHousehold.success", addCardTrigger))
+                    CreateHouseholdUseCase.Result.AlreadyInHousehold -> reply(msg, t("flow.alreadyInHousehold"))
                 }
             }
         }
@@ -360,44 +363,27 @@ class CategorizationBot(
 
     private fun handleInviteCommand(msg: Message, user: BotUser) {
         val token = inviteTokenRepository.create(user.householdId)
-        reply(
-            msg,
-            "✓ Инвайт-код: $token\n" +
-                "Перешли этому человеку: «$JOIN_TRIGGER $token». Код одноразовый.",
-        )
+        reply(msg, t("invite.result", token, joinTrigger))
     }
 
     private fun handleJoinCommand(chatId: Long, msg: Message, text: String) {
-        val token = text.trim().removePrefix(JOIN_TRIGGER).trim()
+        val token = text.trim().removePrefix(joinTrigger).trim()
         if (token.isEmpty()) {
-            reply(msg, "Usage: «$JOIN_TRIGGER <код>» — попроси код у того кто уже в боте.")
+            reply(msg, t("join.usage", joinTrigger))
             return
         }
         val result = joinHouseholdUseCase.join(chatId, token)
         when (result) {
-            is JoinHouseholdUseCase.Result.Joined -> reply(
-                msg,
-                "✓ Добро пожаловать! Ты в household. Привяжи свою карту — «$ADD_CARD_TRIGGER».",
-            )
-            JoinHouseholdUseCase.Result.AlreadyInHousehold -> reply(
-                msg,
-                "Ты уже в household. Присоединяться второй раз нельзя.",
-            )
-            JoinHouseholdUseCase.Result.InvalidToken -> reply(
-                msg,
-                "❌ Неизвестный или уже использованный код.",
-            )
+            is JoinHouseholdUseCase.Result.Joined -> reply(msg, t("join.success", addCardTrigger))
+            JoinHouseholdUseCase.Result.AlreadyInHousehold -> reply(msg, t("join.alreadyJoined"))
+            JoinHouseholdUseCase.Result.InvalidToken -> reply(msg, t("join.invalidToken"))
         }
     }
 
     // ----- Add card flow -----
 
     private fun startAddCardFlow(chatId: Long, msg: Message) {
-        val promptId = reply(
-            msg,
-            "Дай Monobank API токен (получи на api.monobank.ua). " +
-                "На любом шаге ответь «$CANCEL_TRIGGER» чтобы выйти.",
-        ) ?: return
+        val promptId = reply(msg, t("addCard.start", cancelTrigger)) ?: return
         addCardStates[chatId] = AddCardState.AwaitingToken(promptId)
     }
 
@@ -412,19 +398,16 @@ class CategorizationBot(
         when (state) {
             is AddCardState.AwaitingToken -> {
                 if (text.isEmpty()) {
-                    val promptId = reply(msg, "Пустое не подходит. Дай Monobank токен:") ?: return
+                    val promptId = reply(msg, t("addCard.emptyToken")) ?: return
                     addCardStates[chatId] = AddCardState.AwaitingToken(promptId)
                     return
                 }
-                val promptId = reply(
-                    msg,
-                    "Дай Monobank accountId (тот, который тебе нужен — из /api/mono/client-info или из приложения):",
-                ) ?: return
+                val promptId = reply(msg, t("addCard.askAccountId")) ?: return
                 addCardStates[chatId] = AddCardState.AwaitingAccountId(promptId, text)
             }
             is AddCardState.AwaitingAccountId -> {
                 if (text.isEmpty()) {
-                    val promptId = reply(msg, "Пустое не подходит. Дай accountId:") ?: return
+                    val promptId = reply(msg, t("addCard.emptyAccount")) ?: return
                     addCardStates[chatId] = AddCardState.AwaitingAccountId(promptId, state.token)
                     return
                 }
@@ -435,15 +418,15 @@ class CategorizationBot(
                 } catch (e: Exception) {
                     println("Failed to add Monobank account for chat $chatId: ${e.message}")
                     addCardStates.remove(chatId)
-                    reply(msg, "❌ Не получилось привязать карту: ${e.message}")
+                    reply(msg, t("addCard.failed", e.message ?: ""))
                     return
                 }
                 addCardStates.remove(chatId)
-                reply(msg, "✓ Привязал карту. Транзакции скоро начнут прилетать.")
+                reply(msg, t("addCard.success"))
                 broadcastInfo(
                     user.householdId,
                     excludeChatId = chatId,
-                    text = "ℹ️ ${displayNameOf(msg)} привязал(а) новую карту. Её транзакции скоро начнут прилетать в общий лог.",
+                    text = t("addCard.broadcast", displayNameOf(msg)),
                 )
             }
         }
@@ -452,11 +435,7 @@ class CategorizationBot(
     // ----- Cash entry flow -----
 
     private fun startCashEntryFlow(chatId: Long, msg: Message) {
-        val promptId = reply(
-            msg,
-            "Введи сумму трат наличкой (например 245.50 или 245). " +
-                "На любом шаге ответь «$CANCEL_TRIGGER» чтобы выйти.",
-        ) ?: return
+        val promptId = reply(msg, t("cash.start", cancelTrigger)) ?: return
         cashEntryStates[chatId] = CashEntryState.AwaitingAmount(promptId)
     }
 
@@ -469,7 +448,7 @@ class CategorizationBot(
     ) {
         val amount = parseAmount(rawText)
         if (amount == null) {
-            val promptId = reply(msg, "Не понял. Введи положительное число — сумму в гривнах:") ?: return
+            val promptId = reply(msg, t("cash.badAmount")) ?: return
             cashEntryStates[chatId] = CashEntryState.AwaitingAmount(promptId)
             return
         }
@@ -478,7 +457,7 @@ class CategorizationBot(
         } catch (e: Exception) {
             println("Failed to add cash transaction for chat $chatId: ${e.message}")
             cashEntryStates.remove(chatId)
-            reply(msg, "❌ Не получилось записать: ${e.message}")
+            reply(msg, t("cash.failed", e.message ?: ""))
             return
         }
         cashEntryStates.remove(chatId)
@@ -512,7 +491,7 @@ class CategorizationBot(
         data: String,
     ) {
         val parsed = parseCallbackData(user.householdId, data) ?: run {
-            bot.execute(AnswerCallbackQuery(cq.id()).text("Bad callback"))
+            bot.execute(AnswerCallbackQuery(cq.id()).text(t("callback.badCallback")))
             return
         }
 
@@ -525,7 +504,7 @@ class CategorizationBot(
             if (message != null) {
                 bot.execute(EditMessageReplyMarkup(chatId, message.messageId()))
             }
-            bot.execute(AnswerCallbackQuery(cq.id()).text("Уже категоризовано"))
+            bot.execute(AnswerCallbackQuery(cq.id()).text(t("callback.alreadyDone")))
             return
         }
 
@@ -536,7 +515,7 @@ class CategorizationBot(
         // that's already been merged into the sheet → tapping it would double-count.
         clearKeyboardsForTx(parsed.txId)
 
-        bot.execute(AnswerCallbackQuery(cq.id()).text("Saved"))
+        bot.execute(AnswerCallbackQuery(cq.id()).text(t("callback.saved")))
         sendLogForDecision(parsed.txId, parsed.decision)
     }
 
@@ -560,12 +539,12 @@ class CategorizationBot(
         data: String,
     ) {
         val parsed = parseSaveKeywordCallback(user.householdId, data) ?: run {
-            bot.execute(AnswerCallbackQuery(cq.id()).text("Bad callback"))
+            bot.execute(AnswerCallbackQuery(cq.id()).text(t("callback.badCallback")))
             return
         }
         val tx = transactionRepository.get(parsed.txId).orElse(null)
         if (tx == null) {
-            bot.execute(AnswerCallbackQuery(cq.id()).text("Tx not found"))
+            bot.execute(AnswerCallbackQuery(cq.id()).text(t("callback.txNotFound")))
             return
         }
         val result = saveKeywordUseCase(parsed.categoryId, tx.description)
@@ -575,13 +554,13 @@ class CategorizationBot(
         }
         val (callbackText, replyText) = when (result) {
             is SaveKeywordUseCase.Result.Saved ->
-                "Saved" to "✓ Добавил «${result.keyword}» в категорию «${result.category.displayName}»"
+                t("callback.saved") to t("savekw.success", result.keyword, result.category.displayName)
             is SaveKeywordUseCase.Result.AlreadyPresent ->
-                "Already present" to "ℹ️ «${result.keyword}» уже в категории «${result.category.displayName}»"
+                t("callback.alreadyPresent") to t("savekw.alreadyPresent", result.keyword, result.category.displayName)
             SaveKeywordUseCase.Result.CategoryNotFound ->
-                "Category not found" to "❌ Категория не найдена"
+                t("callback.categoryNotFound") to t("savekw.categoryNotFound")
             SaveKeywordUseCase.Result.EmptyKeyword ->
-                "Empty" to "❌ Пустое описание, нечего сохранять"
+                t("callback.empty") to t("savekw.empty")
         }
         bot.execute(AnswerCallbackQuery(cq.id()).text(callbackText))
         bot.execute(SendMessage(chatId, replyText))
@@ -592,7 +571,7 @@ class CategorizationBot(
     private fun handleCommentReply(chatId: Long, replyToMessageId: Long, text: String) {
         if (text.isBlank()) return
 
-        if (text.trim().equals(SAVE_KEYWORD_TRIGGER, ignoreCase = true)) {
+        if (text.trim().equals(saveKeywordTrigger, ignoreCase = true)) {
             promptSaveKeywordCategory(chatId, replyToMessageId)
             return
         }
@@ -601,31 +580,31 @@ class CategorizationBot(
             handleTelegramCommentUseCase(chatId, replyToMessageId, text)
         } catch (e: Exception) {
             println("Failed to save Telegram comment: ${e.message}")
-            bot.execute(SendMessage(chatId, "❌ Не получилось сохранить коммент"))
+            bot.execute(SendMessage(chatId, t("comment.saveError")))
             return
         }
-        val reply = if (saved) "✓ Comment saved" else "❌ Не нашёл транзакцию для этого сообщения"
+        val reply = if (saved) t("comment.saved") else t("comment.notFound")
         bot.execute(SendMessage(chatId, reply))
     }
 
     private fun promptSaveKeywordCategory(chatId: Long, replyToMessageId: Long) {
         val record = telegramLogMessageRepository.findByChatAndMessage(chatId, replyToMessageId)
         if (record == null) {
-            bot.execute(SendMessage(chatId, "❌ Не нашёл транзакцию для этого сообщения"))
+            bot.execute(SendMessage(chatId, t("savekw.txMissing")))
             return
         }
         val tx = transactionRepository.get(record.transactionId).orElse(null)
         if (tx == null) {
-            bot.execute(SendMessage(chatId, "❌ Транзакция не найдена в БД"))
+            bot.execute(SendMessage(chatId, t("savekw.txDbMissing")))
             return
         }
         val description = tx.description.trim()
         if (description.isEmpty()) {
-            bot.execute(SendMessage(chatId, "❌ У транзакции пустое описание, нечего сохранять"))
+            bot.execute(SendMessage(chatId, t("savekw.emptyDescription")))
             return
         }
         bot.execute(
-            SendMessage(chatId, "Выбери категорию для «$description»:")
+            SendMessage(chatId, t("savekw.choose", description))
                 .replyMarkup(buildSaveKeywordKeyboard(tx.householdId, record.transactionId)),
         )
     }
@@ -643,11 +622,7 @@ class CategorizationBot(
     // ----- Add category flow (existing) -----
 
     private fun startAddCategoryFlow(chatId: Long, msg: Message) {
-        val promptId = reply(
-            msg,
-            "Дай название категории (заглавные латинские буквы и `_`). " +
-                "На любом шаге ответь «$CANCEL_TRIGGER», чтобы выйти.",
-        ) ?: return
+        val promptId = reply(msg, t("addCategory.start", cancelTrigger)) ?: return
         addCategoryStates[chatId] = AddCategoryState.AwaitingName(promptId)
     }
 
@@ -673,17 +648,17 @@ class CategorizationBot(
     }
 
     private fun handleNameStep(chatId: Long, msg: Message, name: String, household: Household) {
-        if (!name.matches(NAME_PATTERN)) {
-            val promptId = reply(msg, "Имя должно быть из заглавных латинских букв и `_`. Попробуй ещё:") ?: return
+        if (!name.matches(namePattern)) {
+            val promptId = reply(msg, t("addCategory.name.bad")) ?: return
             addCategoryStates[chatId] = AddCategoryState.AwaitingName(promptId)
             return
         }
         if (categoryRepository.findByName(household.id, name) != null) {
-            val promptId = reply(msg, "Категория «$name» уже существует. Дай другое имя:") ?: return
+            val promptId = reply(msg, t("addCategory.name.exists", name)) ?: return
             addCategoryStates[chatId] = AddCategoryState.AwaitingName(promptId)
             return
         }
-        val promptId = reply(msg, "Дай читаемое название:") ?: return
+        val promptId = reply(msg, t("addCategory.displayName.prompt")) ?: return
         addCategoryStates[chatId] = AddCategoryState.AwaitingDisplayName(promptId, name)
     }
 
@@ -694,11 +669,11 @@ class CategorizationBot(
         prev: AddCategoryState.AwaitingDisplayName,
     ) {
         if (displayName.isEmpty()) {
-            val promptId = reply(msg, "Пустое не подходит. Дай читаемое название:") ?: return
+            val promptId = reply(msg, t("addCategory.displayName.empty")) ?: return
             addCategoryStates[chatId] = prev.copy(lastPromptMessageId = promptId)
             return
         }
-        val promptId = reply(msg, "Дай приоритет ($PRIORITY_MIN..$PRIORITY_MAX):") ?: return
+        val promptId = reply(msg, t("addCategory.priority.prompt", priorityMin, priorityMax)) ?: return
         addCategoryStates[chatId] = AddCategoryState.AwaitingPriority(promptId, prev.name, displayName)
     }
 
@@ -709,16 +684,12 @@ class CategorizationBot(
         prev: AddCategoryState.AwaitingPriority,
     ) {
         val priority = priorityRaw.toIntOrNull()
-        if (priority == null || priority !in PRIORITY_MIN..PRIORITY_MAX) {
-            val promptId = reply(msg, "Нужно число от $PRIORITY_MIN до $PRIORITY_MAX. Попробуй ещё:") ?: return
+        if (priority == null || priority !in priorityMin..priorityMax) {
+            val promptId = reply(msg, t("addCategory.priority.bad", priorityMin, priorityMax)) ?: return
             addCategoryStates[chatId] = prev.copy(lastPromptMessageId = promptId)
             return
         }
-        val promptId = reply(
-            msg,
-            "Дай ключевые слова через запятую, или «$EMPTY_KEYWORDS_TRIGGER» чтобы оставить пустым " +
-                "(тогда добавишь через «Сохранить» в будущем):",
-        ) ?: return
+        val promptId = reply(msg, t("addCategory.keywords.prompt", emptyKeywordsTrigger)) ?: return
         addCategoryStates[chatId] = AddCategoryState.AwaitingKeywords(promptId, prev.name, prev.displayName, priority)
     }
 
@@ -729,7 +700,7 @@ class CategorizationBot(
         prev: AddCategoryState.AwaitingKeywords,
         household: Household,
     ) {
-        val keywords = if (keywordsRaw == EMPTY_KEYWORDS_TRIGGER) {
+        val keywords = if (keywordsRaw == emptyKeywordsTrigger) {
             emptyList()
         } else {
             keywordsRaw.split(',').map { it.trim() }.filter { it.isNotEmpty() }
@@ -745,25 +716,40 @@ class CategorizationBot(
         } catch (e: Exception) {
             println("Failed to add category ${prev.name}: ${e.message}")
             addCategoryStates.remove(chatId)
-            reply(msg, "❌ Не получилось создать категорию: ${e.message}")
+            reply(msg, t("addCategory.createFailed", e.message ?: ""))
             return
         }
         addCategoryStates.remove(chatId)
-        reply(
-            msg,
-            "✓ Создал «${category.name}» (${category.displayName}) на sheet_row=${category.sheetRow}.",
-        )
+        reply(msg, t("addCategory.created", category.name, category.displayName, category.sheetRow))
         broadcastInfo(
             household.id,
             excludeChatId = chatId,
-            text = "ℹ️ ${displayNameOf(msg)} добавил(а) новую категорию «${category.displayName}».",
+            text = t("addCategory.broadcast", displayNameOf(msg), category.displayName),
         )
     }
 
     // ----- Help & utilities -----
 
     private fun sendHelp(msg: Message) {
-        reply(msg, HELP_TEXT)
+        reply(
+            msg,
+            t(
+                "help",
+                createHouseholdTrigger,
+                joinTrigger,
+                addCardTrigger,
+                inviteTrigger,
+                addCategoryTrigger,
+                cashTrigger,
+                saveKeywordTrigger,
+                cancelTrigger,
+            ),
+        )
+    }
+
+    private fun t(code: String, vararg args: Any?): String {
+        val stringArgs: Array<Any?> = Array(args.size) { args[it]?.toString() }
+        return messageSource.getMessage(code, stringArgs, Locale.ROOT)
     }
 
     private fun reply(msg: Message, text: String): Int? {
@@ -791,7 +777,7 @@ class CategorizationBot(
     private fun displayNameOf(msg: Message): String =
         msg.from()?.firstName()?.takeIf { it.isNotBlank() }
             ?: msg.from()?.username()?.takeIf { it.isNotBlank() }
-            ?: "Кто-то"
+            ?: t("displayName.unknown")
 
     private fun buildKeyboard(householdId: UUID, transactionId: String): InlineKeyboardMarkup {
         val all = categoryRepository.findAll(householdId)
@@ -805,8 +791,8 @@ class CategorizationBot(
             }.toTypedArray()
         }
         rows += arrayOf(
-            InlineKeyboardButton("Игнорировать").callbackData("c|$transactionId|-1"),
-            InlineKeyboardButton("Другое").callbackData("c|$transactionId|${other.sheetRow}"),
+            InlineKeyboardButton(t("keyboard.ignore")).callbackData("c|$transactionId|-1"),
+            InlineKeyboardButton(t("keyboard.other")).callbackData("c|$transactionId|${other.sheetRow}"),
         )
         return InlineKeyboardMarkup(*rows.toTypedArray())
     }
@@ -896,43 +882,8 @@ class CategorizationBot(
     }
 
     companion object {
-        private const val SAVE_KEYWORD_TRIGGER = "Сохранить"
-        private const val ADD_CATEGORY_TRIGGER = "Добавить категорию"
-        private const val CREATE_HOUSEHOLD_TRIGGER = "Создать таблицу"
-        private const val ADD_CARD_TRIGGER = "Привязать карту"
-        private const val CASH_TRIGGER = "Наличка"
-        private const val INVITE_TRIGGER = "Пригласить"
-        private const val JOIN_TRIGGER = "Присоединиться"
-        private const val CANCEL_TRIGGER = "Забей"
-        private const val EMPTY_KEYWORDS_TRIGGER = "-"
-        private const val PRIORITY_MIN = 1
-        private const val PRIORITY_MAX = 100
-        private val NAME_PATTERN = Regex("[A-Z_]+")
-        private val HELP_TRIGGERS = setOf("помощь", "/help", "help", "/?", "?")
         private val DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
         private val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
-        private val HELP_TEXT = """
-            Что я умею:
-
-            /start — узнать свой chatId.
-
-            ── Если ты ещё не зарегистрирован ──
-            «Создать таблицу» — пошаговый диалог: создаю household + засеваю дефолтные категории.
-            «Присоединиться <код>» — войти в чужую household по инвайт-коду.
-
-            ── Если ты уже в household ──
-            «Привязать карту» — пошаговый диалог привязки Monobank-токена + accountId.
-            «Пригласить» — сгенерировать одноразовый код, чтобы пригласить кого-то.
-            «Добавить категорию» — пошаговый диалог создания новой категории.
-            «Наличка» — записать трату наличкой: введи сумму → выбери категорию из клавиатуры.
-
-            ── Реплаи на лог транзакции ──
-            • «Сохранить» — клавиатура выбора категории; description пойдёт в её keywords.
-            • Любой другой текст — комментарий в Google Sheets (ряд 2 столбца того дня; через «;»).
-
-            На любом шаге пошагового диалога реплай «Забей» — выйти из флоу.
-            «помощь» или /help — показать это сообщение.
-        """.trimIndent()
 
         private fun currencyCode(numericCode: Int): String = when (numericCode) {
             980 -> "UAH"
