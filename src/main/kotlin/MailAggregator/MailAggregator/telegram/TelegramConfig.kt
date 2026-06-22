@@ -11,6 +11,7 @@ import MailAggregator.MailAggregator.household.usecase.AddMonobankAccountUseCase
 import MailAggregator.MailAggregator.household.usecase.CreateHouseholdUseCase
 import MailAggregator.MailAggregator.household.usecase.JoinHouseholdUseCase
 import MailAggregator.MailAggregator.monobank.repository.TransactionRepository
+import MailAggregator.MailAggregator.monobank.repository.TransactionStatusRepository
 import MailAggregator.MailAggregator.telegram.repository.TelegramLogMessageRepository
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
@@ -26,6 +27,7 @@ class TelegramConfig {
         categoryRepository: CategoryRepository,
         addCategoryUseCase: AddCategoryUseCase,
         transactionRepository: TransactionRepository,
+        transactionStatusRepository: TransactionStatusRepository,
         telegramLogMessageRepository: TelegramLogMessageRepository,
         householdRepository: HouseholdRepository,
         createHouseholdUseCase: CreateHouseholdUseCase,
@@ -41,6 +43,7 @@ class TelegramConfig {
         telegramLogMessageRepository = telegramLogMessageRepository,
         handleTelegramCommentUseCase = handleTelegramCommentUseCase,
         saveKeywordUseCase = saveKeywordUseCase,
+        transactionStatusRepository = transactionStatusRepository,
         householdRepository = householdRepository,
         createHouseholdUseCase = createHouseholdUseCase,
         joinHouseholdUseCase = joinHouseholdUseCase,

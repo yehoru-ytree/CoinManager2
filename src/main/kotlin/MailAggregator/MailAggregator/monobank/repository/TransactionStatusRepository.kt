@@ -36,4 +36,6 @@ class TransactionStatusRepository(
 
     fun getReceivedTransactions() = transactionStatusJpaRepository.findAllByStatus(TransactionStatus.RECEIVED.toString())
 
+    fun findByTransactionId(transactionId: String): TransactionStatus? =
+        transactionStatusJpaRepository.findByTransactionId(transactionId)?.let { TransactionStatus.fromString(it.status) }
 }
