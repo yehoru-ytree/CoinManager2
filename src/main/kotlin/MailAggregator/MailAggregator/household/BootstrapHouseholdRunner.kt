@@ -1,5 +1,8 @@
 package MailAggregator.MailAggregator.household
 
+import MailAggregator.MailAggregator.bank.BankAccount
+import MailAggregator.MailAggregator.bank.BankType
+import MailAggregator.MailAggregator.bank.repository.BankAccountRepository
 import MailAggregator.MailAggregator.household.repository.HouseholdRepository
 import jakarta.persistence.EntityManager
 import jakarta.persistence.PersistenceContext
@@ -12,16 +15,17 @@ import org.springframework.transaction.annotation.Transactional
 import java.util.UUID
 
 /**
- * Seeds the very first household, user, and Monobank account from the legacy single-tenant env
- * vars on the first boot after the multi-user schema migration. Backfills `household_id` on
- * pre-existing rows in `category`, `transaction`, and `telegram_log_message` so they belong to
- * the seeded household.
+ * Seeds the very first household, user, and bank account from the legacy single-tenant env vars
+ * on the first boot after the multi-user schema migration. Backfills `household_id` on pre-existing
+ * rows in `category`, `transaction`, and `telegram_log_message` so they belong to the seeded
+ * household.
  *
  * No-op on every subsequent boot — once at least one household exists, the runner exits early.
  */
 @Component
 class BootstrapHouseholdRunner(
     private val householdRepository: HouseholdRepository,
+    private val bankAccountRepository: BankAccountRepository,
     private val jdbcTemplate: JdbcTemplate,
     @Value("\${telegram.owner-chat-id}") private val ownerChatId: String,
     @Value("\${google.sheet-id}") private val sheetId: String,
@@ -54,10 +58,11 @@ class BootstrapHouseholdRunner(
             ),
         )
 
-        householdRepository.insertMonobankAccount(
-            MonobankAccount(
+        bankAccountRepository.insert(
+            BankAccount(
                 id = UUID.randomUUID(),
                 userId = user.id,
+                bankType = BankType.MONOBANK,
                 token = monobankToken,
                 accountId = monobankAccountId,
             ),

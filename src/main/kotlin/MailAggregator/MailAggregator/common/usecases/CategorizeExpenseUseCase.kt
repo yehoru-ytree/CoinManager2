@@ -1,8 +1,8 @@
 package MailAggregator.MailAggregator.common.usecases
 
+import MailAggregator.MailAggregator.bank.Transaction
 import MailAggregator.MailAggregator.common.Category
 import MailAggregator.MailAggregator.common.repository.CategoryRepository
-import MailAggregator.MailAggregator.monobank.application.MonoTransaction
 import java.util.UUID
 import kotlin.math.abs
 
@@ -46,7 +46,7 @@ class CategorizeExpenseUseCase(
         val amountPredicate: (Long) -> Boolean = { true },
     )
 
-    operator fun invoke(householdId: UUID, txs: List<MonoTransaction>): Map<String, UUID> {
+    operator fun invoke(householdId: UUID, txs: List<Transaction>): Map<String, UUID> {
         if (txs.isEmpty()) return emptyMap()
 
         val categories = categoryRepository.findAll(householdId)
@@ -78,18 +78,16 @@ class CategorizeExpenseUseCase(
         return txs.associate { tx -> tx.id to categorize(tx, rules, other).id }
     }
 
-    private fun categorize(tx: MonoTransaction, rules: List<Rule>, other: Category): Category {
-        val raw = tx.raw
-
+    private fun categorize(tx: Transaction, rules: List<Rule>, other: Category): Category {
         val text = normalize(
             buildString {
-                append(raw.description)
-                raw.comment?.let { append(' ').append(it) }
-                raw.counterName?.let { append(' ').append(it) }
+                append(tx.description)
+                tx.comment?.let { append(' ').append(it) }
+                tx.counterName?.let { append(' ').append(it) }
             },
         )
 
-        val amountAbsMinor: Long = abs(raw.amount)
+        val amountAbsMinor: Long = abs(tx.amount)
 
         val matched = rules.firstOrNull { rule ->
             rule.amountPredicate(amountAbsMinor) &&

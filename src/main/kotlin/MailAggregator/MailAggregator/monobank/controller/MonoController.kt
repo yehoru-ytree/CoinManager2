@@ -1,9 +1,12 @@
 package MailAggregator.MailAggregator.monobank.controller
 
+import MailAggregator.MailAggregator.bank.BankAccount
+import MailAggregator.MailAggregator.bank.BankType
+import MailAggregator.MailAggregator.bank.Transaction
+import MailAggregator.MailAggregator.bank.repository.BankAccountRepository
+import MailAggregator.MailAggregator.bank.repository.TransactionRepository
 import MailAggregator.MailAggregator.household.repository.HouseholdRepository
 import MailAggregator.MailAggregator.monobank.api.MonobankApi
-import MailAggregator.MailAggregator.monobank.application.MonoTransaction
-import MailAggregator.MailAggregator.monobank.repository.TransactionRepository
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.web.bind.annotation.GetMapping
 import org.springframework.web.bind.annotation.PostMapping
@@ -13,14 +16,15 @@ import org.springframework.web.bind.annotation.RestController
 import java.time.Instant
 
 /**
- * Dev/debug endpoints. Each call picks a Monobank account from the DB (by `accountId` query
- * param, or the first one if unspecified). Returns 404-style errors if none exists.
+ * Dev/debug endpoints specific to Monobank. Picks the first Monobank account in the DB (or one
+ * matching the `accountId` query param) and uses its token.
  */
 @RestController
 @RequestMapping("/api/mono")
 class MonoController(
     private val monobankApi: MonobankApi,
     private val transactionRepository: TransactionRepository,
+    private val bankAccountRepository: BankAccountRepository,
     private val householdRepository: HouseholdRepository,
 ) {
 
@@ -39,11 +43,11 @@ class MonoController(
         @RequestParam(required = false) from: Long?,
         @RequestParam(required = false) to: Long?,
         @RequestParam(required = false, defaultValue = "24") hours: Long,
-    ): List<MonoTransaction> {
+    ): List<Transaction> {
         val account = pickAccount(accountId)
             ?: throw IllegalArgumentException("No Monobank account in DB; bootstrap a household first")
         val user = householdRepository.findUserById(account.userId)
-            ?: throw IllegalStateException("Orphan monobank_account ${account.id}")
+            ?: throw IllegalStateException("Orphan bank_account ${account.id}")
 
         val toInstant = to?.let(Instant::ofEpochSecond) ?: Instant.now()
         val fromInstant = from?.let(Instant::ofEpochSecond) ?: toInstant.minusSeconds(hours * 3600)
@@ -64,7 +68,7 @@ class MonoController(
         return mapOf("ingested" to txs.size)
     }
 
-    private fun pickAccount(accountId: String?) =
-        householdRepository.findAllMonobankAccounts()
-            .firstOrNull { accountId == null || it.accountId == accountId }
+    private fun pickAccount(accountId: String?): BankAccount? =
+        bankAccountRepository.findAll()
+            .firstOrNull { it.bankType == BankType.MONOBANK && (accountId == null || it.accountId == accountId) }
 }

@@ -15,10 +15,3 @@ data class BotUser(
     val name: String?,
     val householdId: UUID,
 )
-
-data class MonobankAccount(
-    val id: UUID,
-    val userId: UUID,
-    val token: String,
-    val accountId: String,
-)

@@ -1,29 +1,37 @@
 package MailAggregator.MailAggregator.spreadsheet.usecases
 
+import MailAggregator.MailAggregator.bank.BankAccount
+import MailAggregator.MailAggregator.bank.BankApi
+import MailAggregator.MailAggregator.bank.BankType
+import MailAggregator.MailAggregator.bank.Transaction
+import MailAggregator.MailAggregator.bank.repository.BankAccountRepository
 import MailAggregator.MailAggregator.common.config.Config.Companion.TIME_ZONE
 import MailAggregator.MailAggregator.common.repository.CategoryRepository
 import MailAggregator.MailAggregator.common.usecases.CategorizeExpenseUseCase
 import MailAggregator.MailAggregator.common.usecases.ExecuteTransactionsUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleOtherExpensesUseCase
 import MailAggregator.MailAggregator.household.Household
-import MailAggregator.MailAggregator.household.MonobankAccount
 import MailAggregator.MailAggregator.household.repository.HouseholdRepository
-import MailAggregator.MailAggregator.monobank.api.MonobankApi
-import MailAggregator.MailAggregator.monobank.application.MonoTransaction
 import MailAggregator.MailAggregator.telegram.CategorizationBot
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.util.UUID
 
-class ProcessIncomingMonobankTransactionsUseCase(
-    val monobankApi: MonobankApi,
+/**
+ * Periodic job: walks all linked bank accounts, dispatches each to the matching [BankApi]
+ * implementation based on `bankType`, and feeds new transactions through the existing
+ * categorisation / sheet-merge / Telegram-broadcast pipeline.
+ */
+class ProcessIncomingBankTransactionsUseCase(
+    val bankApis: Map<BankType, BankApi>,
     val handleNotProcessedTransactionsUseCase: HandleNotProcessedTransactionsUseCase,
     val categorizeExpenseUseCase: CategorizeExpenseUseCase,
     val mergeSpendingsByDateUseCase: MergeSpendingsByDateUseCase,
     val executeTransactionsUseCase: ExecuteTransactionsUseCase,
     val handleOtherExpensesUseCase: HandleOtherExpensesUseCase,
     val categoryRepository: CategoryRepository,
+    val bankAccountRepository: BankAccountRepository,
     val householdRepository: HouseholdRepository,
     val categorizationBot: CategorizationBot,
     val statementWindowMinutes: Long,
@@ -32,23 +40,27 @@ class ProcessIncomingMonobankTransactionsUseCase(
         val to = Instant.now()
         val from = to.minusSeconds(statementWindowMinutes * 60)
 
-        for (account in householdRepository.findAllMonobankAccounts()) {
+        for (account in bankAccountRepository.findAll()) {
             try {
                 processAccount(account, from, to)
             } catch (e: Exception) {
-                println("Failed to process Monobank account ${account.accountId}: ${e.message}")
+                println("Failed to process ${account.bankType} account ${account.accountId}: ${e.message}")
             }
         }
     }
 
-    private fun processAccount(account: MonobankAccount, from: Instant, to: Instant) {
+    private fun processAccount(account: BankAccount, from: Instant, to: Instant) {
+        val api = bankApis[account.bankType] ?: run {
+            println("No BankApi registered for ${account.bankType}; skipping account ${account.accountId}")
+            return
+        }
         val user = householdRepository.findUserById(account.userId) ?: return
         val household = householdRepository.findHousehold(user.householdId) ?: return
 
-        val monoTransactions = monobankApi.getStatements(account.token, account.accountId, household.id, from, to)
-            .filter { it.raw.amount < 0 } // TODO income flows in future
+        val transactions = api.getStatements(account.token, account.accountId, household.id, from, to)
+            .filter { it.amount < 0 } // TODO income flows in future
 
-        val newTransactions = handleNotProcessedTransactionsUseCase(monoTransactions)
+        val newTransactions = handleNotProcessedTransactionsUseCase(transactions)
         if (newTransactions.isEmpty()) return
 
         val otherCategoryId = categoryRepository.findOther(household.id).id
@@ -84,13 +96,13 @@ class ProcessIncomingMonobankTransactionsUseCase(
         }
 
         handleOtherExpensesUseCase(
-            monoTransactions.filter { it.id in uncategorizedExpenses },
+            transactions.filter { it.id in uncategorizedExpenses },
         )
     }
 
     private fun sendAutoCategorizedLogs(
         household: Household,
-        transactions: List<MonoTransaction>,
+        transactions: List<Transaction>,
         categorizedExpenses: Map<String, UUID>,
     ) {
         val txById = transactions.associateBy { it.id }
@@ -107,24 +119,24 @@ class ProcessIncomingMonobankTransactionsUseCase(
 
     fun mergeExpenses(
         categorizedExpenses: Map<String, UUID>,
-        newTransactions: List<MonoTransaction>,
+        newTransactions: List<Transaction>,
     ): Map<UUID, Double> =
         newTransactions
             .asSequence()
             .mapNotNull { tx ->
                 val categoryId = categorizedExpenses[tx.id] ?: return@mapNotNull null
-                val amount = tx.raw.amount.toDouble() * -1 / 100.0
+                val amount = tx.amount.toDouble() * -1 / 100.0
                 categoryId to amount
             }
             .groupBy({ it.first }, { it.second })
             .mapValues { (_, amounts) -> amounts.sum() }
 
     fun groupByLocalDate(
-        monoTransactions: List<MonoTransaction>,
+        transactions: List<Transaction>,
         zoneId: ZoneId = TIME_ZONE,
-    ): Map<LocalDate, List<MonoTransaction>> =
-        monoTransactions.groupBy { tx ->
-            Instant.ofEpochSecond(tx.raw.time)
+    ): Map<LocalDate, List<Transaction>> =
+        transactions.groupBy { tx ->
+            Instant.ofEpochSecond(tx.time)
                 .atZone(zoneId)
                 .toLocalDate()
         }

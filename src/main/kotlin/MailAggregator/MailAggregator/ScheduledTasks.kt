@@ -1,21 +1,15 @@
 package MailAggregator.MailAggregator
 
-import MailAggregator.MailAggregator.monobank.api.MonobankApi
-import MailAggregator.MailAggregator.spreadsheet.usecases.ProcessIncomingMonobankTransactionsUseCase
-import org.slf4j.Logger
-import org.slf4j.LoggerFactory
+import MailAggregator.MailAggregator.spreadsheet.usecases.ProcessIncomingBankTransactionsUseCase
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
-import java.text.SimpleDateFormat
-
 
 @Component
 class ScheduledTasks(
-    val processIncomingMonobankTransactionsUseCase: ProcessIncomingMonobankTransactionsUseCase
-)  {
-
+    val processIncomingBankTransactionsUseCase: ProcessIncomingBankTransactionsUseCase,
+) {
     @Scheduled(fixedDelayString = "\${monobank.poll-interval}")
-    fun scheduledTask(){
-        processIncomingMonobankTransactionsUseCase()
+    fun scheduledTask() {
+        processIncomingBankTransactionsUseCase()
     }
 }
