@@ -3,22 +3,23 @@ package MailAggregator.MailAggregator.common.config
 import MailAggregator.MailAggregator.common.repository.CategoryRepository
 import MailAggregator.MailAggregator.common.usecases.AddCategoryUseCase
 import MailAggregator.MailAggregator.common.usecases.CategorizeExpenseUseCase
-import MailAggregator.MailAggregator.common.usecases.HandleTelegramCommentUseCase
-import MailAggregator.MailAggregator.common.usecases.HandleTelegramResponseUseCase
 import MailAggregator.MailAggregator.common.usecases.ExecuteTransactionsUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleOtherExpensesUseCase
+import MailAggregator.MailAggregator.common.usecases.HandleTelegramCommentUseCase
+import MailAggregator.MailAggregator.common.usecases.HandleTelegramResponseUseCase
 import MailAggregator.MailAggregator.common.usecases.SaveKeywordUseCase
+import MailAggregator.MailAggregator.household.repository.HouseholdRepository
 import MailAggregator.MailAggregator.monobank.api.MonobankApi
 import MailAggregator.MailAggregator.monobank.repository.TransactionRepository
 import MailAggregator.MailAggregator.monobank.repository.TransactionStatusRepository
 import MailAggregator.MailAggregator.spreadsheet.usecase.VerifyMonthSheetExistsUseCase
-import MailAggregator.MailAggregator.spreadsheet.util.SheetRequester
 import MailAggregator.MailAggregator.spreadsheet.usecases.AppendCommentToSheetUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.GetSpendingsByDateUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.HandleNotProcessedTransactionsUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.MergeSpendingsByDateUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.ProcessIncomingMonobankTransactionsUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.UpdateSpendingsByDateUseCase
+import MailAggregator.MailAggregator.spreadsheet.util.SheetRequester
 import MailAggregator.MailAggregator.telegram.CategorizationBot
 import MailAggregator.MailAggregator.telegram.repository.TelegramLogMessageRepository
 import org.springframework.beans.factory.annotation.Value
@@ -35,7 +36,6 @@ class Config(
     }
 
     companion object {
-        // Initialised from app.timezone in Config's constructor; default kept for tests/static access before Spring boots.
         var TIME_ZONE: ZoneId = ZoneId.of("Europe/Zaporozhye")
             private set
     }
@@ -51,13 +51,9 @@ class Config(
     fun addCategoryUseCase(
         categoryRepository: CategoryRepository,
         sheetRequester: SheetRequester,
-        @Value("\${google.sheet-id}") sheetId: String,
-        @Value("\${google.template-sheet-title}") templateSheetTitle: String,
     ) = AddCategoryUseCase(
         categoryRepository = categoryRepository,
         sheetRequester = sheetRequester,
-        sheetId = sheetId,
-        templateSheetTitle = templateSheetTitle,
     )
 
     @Bean
@@ -66,7 +62,7 @@ class Config(
         transactionStatusRepository: TransactionStatusRepository,
     ) = HandleNotProcessedTransactionsUseCase(
         transactionRepository = transactionRepository,
-        transactionStatusRepository = transactionStatusRepository
+        transactionStatusRepository = transactionStatusRepository,
     )
 
     @Bean
@@ -78,8 +74,8 @@ class Config(
         executeTransactionsUseCase: ExecuteTransactionsUseCase,
         handleOtherExpensesUseCase: HandleOtherExpensesUseCase,
         categoryRepository: CategoryRepository,
+        householdRepository: HouseholdRepository,
         categorizationBot: CategorizationBot,
-        @Value("\${monobank.account-id}") accountId: String,
         @Value("\${monobank.statement-window-minutes}") statementWindowMinutes: Long,
     ) = ProcessIncomingMonobankTransactionsUseCase(
         monobankApi = monobankApi,
@@ -89,27 +85,29 @@ class Config(
         mergeSpendingsByDateUseCase = mergeSpendingsByDateUseCase,
         handleOtherExpensesUseCase = handleOtherExpensesUseCase,
         categoryRepository = categoryRepository,
+        householdRepository = householdRepository,
         categorizationBot = categorizationBot,
-        accountId = accountId,
         statementWindowMinutes = statementWindowMinutes,
     )
 
     @Bean
     fun updateTransactionStatusUseCase(
-        transactionStatusRepository: TransactionStatusRepository
+        transactionStatusRepository: TransactionStatusRepository,
     ) = ExecuteTransactionsUseCase(
-        transactionStatusRepository = transactionStatusRepository
+        transactionStatusRepository = transactionStatusRepository,
     )
 
     @Bean
     fun handleTelegramResponseUseCase(
         transactionRepository: TransactionRepository,
         mergeSpendingsByDateUseCase: MergeSpendingsByDateUseCase,
-        transactionStatusRepository: TransactionStatusRepository
+        transactionStatusRepository: TransactionStatusRepository,
+        householdRepository: HouseholdRepository,
     ) = HandleTelegramResponseUseCase(
         transactionRepository = transactionRepository,
         transactionStatusRepository = transactionStatusRepository,
-        mergeSpendingsByDateUseCase = mergeSpendingsByDateUseCase
+        mergeSpendingsByDateUseCase = mergeSpendingsByDateUseCase,
+        householdRepository = householdRepository,
     )
 
     @Bean
@@ -118,26 +116,24 @@ class Config(
         getSpendingsByDateUseCase: GetSpendingsByDateUseCase,
     ) = MergeSpendingsByDateUseCase(
         updateSpendingsByDateUseCase = updateSpendingsByDateUseCase,
-        getSpendingsByDateUseCase = getSpendingsByDateUseCase
+        getSpendingsByDateUseCase = getSpendingsByDateUseCase,
     )
 
     @Bean
     fun handleOtherExpensesUseCase(
         categorizationBot: CategorizationBot,
-        transactionStatusRepository: TransactionStatusRepository
+        transactionStatusRepository: TransactionStatusRepository,
     ) = HandleOtherExpensesUseCase(
         telegramBot = categorizationBot,
-        transactionStatusRepository = transactionStatusRepository
+        transactionStatusRepository = transactionStatusRepository,
     )
 
     @Bean
     fun appendCommentToSheetUseCase(
         sheetRequester: SheetRequester,
         verifyMonthSheetExistsUseCase: VerifyMonthSheetExistsUseCase,
-        @Value("\${google.sheet-id}") sheetId: String,
     ) = AppendCommentToSheetUseCase(
         sheetRequester = sheetRequester,
-        sheetId = sheetId,
         verifyMonthSheetExistsUseCase = verifyMonthSheetExistsUseCase,
     )
 
@@ -146,10 +142,12 @@ class Config(
         telegramLogMessageRepository: TelegramLogMessageRepository,
         transactionRepository: TransactionRepository,
         appendCommentToSheetUseCase: AppendCommentToSheetUseCase,
+        householdRepository: HouseholdRepository,
     ) = HandleTelegramCommentUseCase(
         telegramLogMessageRepository = telegramLogMessageRepository,
         transactionRepository = transactionRepository,
         appendCommentToSheetUseCase = appendCommentToSheetUseCase,
+        householdRepository = householdRepository,
     )
 
     @Bean

@@ -16,29 +16,29 @@ class CategoryRepository(
         private val objectMapper: ObjectMapper = jacksonObjectMapper()
     }
 
-    fun findAll(): List<Category> = categoryJpaRepository.findAll().map(::toDomain)
+    fun findAll(householdId: UUID): List<Category> =
+        categoryJpaRepository.findAllByHouseholdId(householdId).map(::toDomain)
 
     fun findById(id: UUID): Category? =
         categoryJpaRepository.findById(id).map(::toDomain).orElse(null)
 
-    fun findByName(name: String): Category? =
-        categoryJpaRepository.findByName(name)?.let(::toDomain)
+    fun findByName(householdId: UUID, name: String): Category? =
+        categoryJpaRepository.findByHouseholdIdAndName(householdId, name)?.let(::toDomain)
 
-    fun findBySheetRow(sheetRow: Int): Category? =
-        categoryJpaRepository.findBySheetRow(sheetRow)?.let(::toDomain)
+    fun findBySheetRow(householdId: UUID, sheetRow: Int): Category? =
+        categoryJpaRepository.findByHouseholdIdAndSheetRow(householdId, sheetRow)?.let(::toDomain)
 
-    fun findOther(): Category =
-        categoryJpaRepository.findFirstByIsOtherTrue()?.let(::toDomain)
-            ?: error("No category marked as is_other=true; check seed migration V3.")
+    fun findOther(householdId: UUID): Category =
+        categoryJpaRepository.findFirstByHouseholdIdAndIsOtherTrue(householdId)?.let(::toDomain)
+            ?: error("No OTHER category for household $householdId; seed the household first.")
 
-    fun nextSheetRow(): Int =
-        (categoryJpaRepository.findAll().maxOfOrNull { it.sheetRow } ?: -1) + 1
-
-    fun insert(category: Category): Category = save(category)
+    fun nextSheetRow(householdId: UUID): Int =
+        (categoryJpaRepository.findAllByHouseholdId(householdId).maxOfOrNull { it.sheetRow } ?: -1) + 1
 
     fun save(category: Category): Category {
         val entity = CategoryJpaEntity(
             id = category.id,
+            householdId = category.householdId,
             name = category.name,
             displayName = category.displayName,
             sheetRow = category.sheetRow,
@@ -51,6 +51,7 @@ class CategoryRepository(
 
     private fun toDomain(entity: CategoryJpaEntity): Category = Category(
         id = entity.id,
+        householdId = entity.householdId,
         name = entity.name,
         displayName = entity.displayName,
         sheetRow = entity.sheetRow,

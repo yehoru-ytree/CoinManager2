@@ -1,5 +1,6 @@
 package MailAggregator.MailAggregator.spreadsheet.usecases
 
+import MailAggregator.MailAggregator.household.Household
 import java.time.LocalDate
 import java.util.UUID
 
@@ -8,11 +9,12 @@ class MergeSpendingsByDateUseCase(
     val getSpendingsByDateUseCase: GetSpendingsByDateUseCase,
 ) {
     operator fun invoke(
+        household: Household,
         date: LocalDate,
         newExpenses: Map<UUID, Double>,
     ) {
-        val existingSpendings = getSpendingsByDateUseCase.invoke(date)
-        updateSpendingsByDateUseCase(date, mergeExpenses(existingSpendings, newExpenses))
+        val existingSpendings = getSpendingsByDateUseCase.invoke(household, date)
+        updateSpendingsByDateUseCase(household, date, mergeExpenses(existingSpendings, newExpenses))
     }
 
     private fun mergeExpenses(

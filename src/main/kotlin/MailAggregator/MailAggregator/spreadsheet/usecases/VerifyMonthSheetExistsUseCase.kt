@@ -1,32 +1,32 @@
 package MailAggregator.MailAggregator.spreadsheet.usecase
 
+import MailAggregator.MailAggregator.household.Household
 import MailAggregator.MailAggregator.spreadsheet.util.SheetRequester
 import java.time.YearMonth
 
 class VerifyMonthSheetExistsUseCase(
     private val sheetRequester: SheetRequester,
-    private val sheetId: String,
-    private val templateSheetTitle: String,
 ) {
-    operator fun invoke(targetSheetTitle: String) {
+    operator fun invoke(household: Household, targetSheetTitle: String) {
+        val sheetId = household.sheetId
         val targetSheetAlreadyExists = sheetRequester.sheetExists(sheetId, targetSheetTitle)
 
         if (!targetSheetAlreadyExists) {
             sheetRequester.duplicateSheet(
                 spreadsheetId = sheetId,
-                sourceSheetTitle = templateSheetTitle,
+                sourceSheetTitle = household.templateSheetTitle,
                 newSheetTitle = targetSheetTitle,
             )
-            clearUserEditableArea(targetSheetTitle)
-            fillDateHeaderIfPossible(targetSheetTitle)
+            clearUserEditableArea(sheetId, targetSheetTitle)
+            fillDateHeaderIfPossible(sheetId, targetSheetTitle)
         }
     }
 
-    private fun clearUserEditableArea(sheetTitle: String) {
+    private fun clearUserEditableArea(sheetId: String, sheetTitle: String) {
         sheetRequester.clearRange(sheetId, "'$sheetTitle'!B2:AF27")
     }
 
-    private fun fillDateHeaderIfPossible(sheetTitle: String) {
+    private fun fillDateHeaderIfPossible(sheetId: String, sheetTitle: String) {
         val yearMonth = parseYearMonth(sheetTitle) ?: return
 
         val values = buildDateHeaderRow(yearMonth)

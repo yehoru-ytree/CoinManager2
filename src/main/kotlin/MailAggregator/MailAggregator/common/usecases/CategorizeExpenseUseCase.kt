@@ -46,10 +46,10 @@ class CategorizeExpenseUseCase(
         val amountPredicate: (Long) -> Boolean = { true },
     )
 
-    operator fun invoke(txs: List<MonoTransaction>): Map<String, UUID> {
+    operator fun invoke(householdId: UUID, txs: List<MonoTransaction>): Map<String, UUID> {
         if (txs.isEmpty()) return emptyMap()
 
-        val categories = categoryRepository.findAll()
+        val categories = categoryRepository.findAll(householdId)
         val byName = categories.associateBy { it.name }
         val other = categories.first { it.isOther }
 

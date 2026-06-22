@@ -6,7 +6,6 @@ import MailAggregator.MailAggregator.spreadsheet.usecase.VerifyMonthSheetExistsU
 import MailAggregator.MailAggregator.spreadsheet.usecases.GetSpendingsByDateUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.UpdateSpendingsByDateUseCase
 import MailAggregator.MailAggregator.spreadsheet.util.SheetRequester
-import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 
@@ -15,12 +14,10 @@ class SpreadsheetConfig {
     @Bean
     fun getSpendingsByDateUseCase(
         sheetRequester: SheetRequester,
-        @Value("\${google.sheet-id}") sheetId: String,
         verifyMonthSheetExistsUseCase: VerifyMonthSheetExistsUseCase,
         categoryRepository: CategoryRepository,
     ) = GetSpendingsByDateUseCase(
         sheetRequester,
-        sheetId,
         verifyMonthSheetExistsUseCase,
         categoryRepository,
     )
@@ -28,12 +25,10 @@ class SpreadsheetConfig {
     @Bean
     fun updateSpendingsByDateUseCase(
         sheetRequester: SheetRequester,
-        @Value("\${google.sheet-id}") sheetId: String,
         verifyMonthSheetExistsUseCase: VerifyMonthSheetExistsUseCase,
         categoryRepository: CategoryRepository,
     ) = UpdateSpendingsByDateUseCase(
-        sheetRequester,
-        sheetId,
+        sheetRequester = sheetRequester,
         verifyMonthSheetExistsUseCase = verifyMonthSheetExistsUseCase,
         categoryRepository = categoryRepository,
     )
@@ -41,12 +36,8 @@ class SpreadsheetConfig {
     @Bean
     fun prepareTemplateSpreadsheetUseCase(
         sheetRequester: SheetRequester,
-        @Value("\${google.sheet-id}") sheetId: String,
-        @Value("\${google.template-sheet-title}") templateSheetTitle: String,
     ) = VerifyMonthSheetExistsUseCase(
         sheetRequester,
-        sheetId,
-        templateSheetTitle,
     )
 
     @Bean

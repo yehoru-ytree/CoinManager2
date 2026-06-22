@@ -2,6 +2,7 @@ package MailAggregator.MailAggregator.common.usecases
 
 import MailAggregator.MailAggregator.common.Category
 import MailAggregator.MailAggregator.common.repository.CategoryRepository
+import MailAggregator.MailAggregator.household.Household
 import MailAggregator.MailAggregator.spreadsheet.usecases.UpdateSpendingsByDateUseCase
 import MailAggregator.MailAggregator.spreadsheet.util.SheetRequester
 import java.util.UUID
@@ -9,13 +10,18 @@ import java.util.UUID
 class AddCategoryUseCase(
     private val categoryRepository: CategoryRepository,
     private val sheetRequester: SheetRequester,
-    private val sheetId: String,
-    private val templateSheetTitle: String,
 ) {
-    fun add(name: String, displayName: String, priority: Int, keywords: List<String>): Category {
-        val sheetRow = categoryRepository.nextSheetRow()
+    fun add(
+        household: Household,
+        name: String,
+        displayName: String,
+        priority: Int,
+        keywords: List<String>,
+    ): Category {
+        val sheetRow = categoryRepository.nextSheetRow(household.id)
         val category = Category(
             id = UUID.randomUUID(),
+            householdId = household.id,
             name = name,
             displayName = displayName,
             sheetRow = sheetRow,
@@ -23,12 +29,12 @@ class AddCategoryUseCase(
             keywords = keywords,
             isOther = false,
         )
-        val saved = categoryRepository.insert(category)
+        val saved = categoryRepository.save(category)
 
         val templateRow = UpdateSpendingsByDateUseCase.START_ROW + sheetRow
         sheetRequester.updateTableRange(
-            sheetId,
-            "'$templateSheetTitle'!A$templateRow",
+            household.sheetId,
+            "'${household.templateSheetTitle}'!A$templateRow",
             listOf(listOf(displayName)),
         )
 

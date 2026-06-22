@@ -6,6 +6,9 @@ import MailAggregator.MailAggregator.common.repository.CategoryRepository
 import MailAggregator.MailAggregator.common.usecases.AddCategoryUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramCommentUseCase
 import MailAggregator.MailAggregator.common.usecases.SaveKeywordUseCase
+import MailAggregator.MailAggregator.household.BotUser
+import MailAggregator.MailAggregator.household.Household
+import MailAggregator.MailAggregator.household.repository.HouseholdRepository
 import MailAggregator.MailAggregator.monobank.application.MonoTransaction
 import MailAggregator.MailAggregator.monobank.repository.TransactionRepository
 import MailAggregator.MailAggregator.telegram.model.CategorizationRequest
@@ -28,13 +31,13 @@ import java.util.UUID
 
 class CategorizationBot(
     private val token: String,
-    private val ownerChatId: Long,
     private val categoryRepository: CategoryRepository,
     private val addCategoryUseCase: AddCategoryUseCase,
     private val transactionRepository: TransactionRepository,
     private val telegramLogMessageRepository: TelegramLogMessageRepository,
     private val handleTelegramCommentUseCase: HandleTelegramCommentUseCase,
     private val saveKeywordUseCase: SaveKeywordUseCase,
+    private val householdRepository: HouseholdRepository,
     private val zoneId: ZoneId = TIME_ZONE,
     private val onDecision: (txId: String, decision: Decision) -> Unit,
 ) {
@@ -51,6 +54,8 @@ class CategorizationBot(
         })
     }
 
+    /** Sent for OTHER transactions: broadcasts the categorisation prompt with keyboard to every
+     *  member of the transaction's household. The first member to tap a button decides for all. */
     fun sendTx(transaction: CategorizationRequest) {
         val text = buildString {
             appendLine("🧾 ${transaction.description}")
@@ -58,12 +63,13 @@ class CategorizationBot(
             appendLine("Time: ${transaction.transactionTime}")
             appendLine("Amount: ${transaction.amount}")
         }
-
-        val keyboard = buildKeyboard(transaction.transactionId)
-
-        bot.execute(
-            SendMessage(ownerChatId, text).replyMarkup(keyboard),
-        )
+        val keyboard = buildKeyboard(transaction.householdId, transaction.transactionId)
+        val users = householdRepository.findUsersInHousehold(transaction.householdId)
+        for (user in users) {
+            bot.execute(
+                SendMessage(user.chatId, text).replyMarkup(keyboard),
+            )
+        }
     }
 
     private fun handleUpdate(update: Update) {
@@ -78,12 +84,12 @@ class CategorizationBot(
                 return
             }
 
-            if (chatId != ownerChatId) return
+            val user = householdRepository.findUserByChatId(chatId) ?: return
+            val household = householdRepository.findHousehold(user.householdId) ?: return
 
             val replyTo = msg.replyToMessage()
             val state = addCategoryStates[chatId]
 
-            // Mid-flow cancel: a reply with "Забей" to any bot message kills the flow.
             if (state != null && replyTo != null && replyTo.from()?.isBot == true &&
                 text.trim().equals(CANCEL_TRIGGER, ignoreCase = true)
             ) {
@@ -91,13 +97,11 @@ class CategorizationBot(
                 return
             }
 
-            // Flow step: only counts when the reply targets the current flow's prompt.
             if (state != null && replyTo != null && replyTo.messageId() == state.lastPromptMessageId) {
-                handleAddCategoryStep(chatId, msg, text, state)
+                handleAddCategoryStep(chatId, msg, text, state, household)
                 return
             }
 
-            // Trigger phrase as a plain (non-reply) message — restarts the flow if one is running.
             if (replyTo == null && text.trim().equals(ADD_CATEGORY_TRIGGER, ignoreCase = true)) {
                 if (state != null) {
                     addCategoryStates.remove(chatId)
@@ -107,19 +111,16 @@ class CategorizationBot(
                 return
             }
 
-            // Replies to bot tx-log messages (comment / save keyword) — still work mid-flow.
             if (replyTo != null && replyTo.from()?.isBot == true) {
                 handleCommentReply(chatId, replyTo.messageId().toLong(), text)
                 return
             }
 
-            // Explicit help command.
             if (replyTo == null && text.trim().lowercase() in HELP_TRIGGERS) {
                 sendHelp(msg)
                 return
             }
 
-            // Plain non-reply that did not match anything above — point user to /help.
             if (replyTo == null) {
                 reply(msg, "Не понял. Напиши «помощь» чтобы увидеть, что я умею.")
                 return
@@ -127,16 +128,17 @@ class CategorizationBot(
         }
 
         val cq = update.callbackQuery() ?: return
-        val chatId = cq.message()?.chat()?.id()
-        if (chatId != ownerChatId) {
+        val chatId = cq.message()?.chat()?.id() ?: return
+        val user = householdRepository.findUserByChatId(chatId)
+        if (user == null) {
             bot.execute(AnswerCallbackQuery(cq.id()).text("Not allowed"))
             return
         }
 
         val data = cq.data() ?: return
         when (data.firstOrNull()) {
-            'c' -> handleCategorizationCallback(cq, chatId, data)
-            'k' -> handleSaveKeywordCallback(cq, chatId, data)
+            'c' -> handleCategorizationCallback(cq, chatId, user, data)
+            'k' -> handleSaveKeywordCallback(cq, chatId, user, data)
             else -> bot.execute(AnswerCallbackQuery(cq.id()).text("Bad callback"))
         }
     }
@@ -144,9 +146,10 @@ class CategorizationBot(
     private fun handleCategorizationCallback(
         cq: com.pengrad.telegrambot.model.CallbackQuery,
         chatId: Long,
+        user: BotUser,
         data: String,
     ) {
-        val parsed = parseCallbackData(data) ?: run {
+        val parsed = parseCallbackData(user.householdId, data) ?: run {
             bot.execute(AnswerCallbackQuery(cq.id()).text("Bad callback"))
             return
         }
@@ -165,9 +168,10 @@ class CategorizationBot(
     private fun handleSaveKeywordCallback(
         cq: com.pengrad.telegrambot.model.CallbackQuery,
         chatId: Long,
+        user: BotUser,
         data: String,
     ) {
-        val parsed = parseSaveKeywordCallback(data) ?: run {
+        val parsed = parseSaveKeywordCallback(user.householdId, data) ?: run {
             bot.execute(AnswerCallbackQuery(cq.id()).text("Bad callback"))
             return
         }
@@ -195,7 +199,10 @@ class CategorizationBot(
         bot.execute(SendMessage(chatId, replyText))
     }
 
-    fun sendLog(transaction: MonoTransaction, category: Category?) {
+    /** Broadcasts the transaction log to every member of [household]. Each copy is recorded in
+     *  `telegram_log_message` so that any member's reply (Сохранить / комментарий) can be routed
+     *  back to the transaction. */
+    fun sendLog(household: Household, transaction: MonoTransaction, category: Category?) {
         val zoned = Instant.ofEpochSecond(transaction.raw.time).atZone(zoneId)
         val date = zoned.format(DATE_FORMAT)
         val time = zoned.format(TIME_FORMAT)
@@ -208,9 +215,12 @@ class CategorizationBot(
             appendLine("$date $time  −$amount $currency")
             append(tail)
         }
-        val response = bot.execute(SendMessage(ownerChatId, text))
-        val messageId = response?.message()?.messageId()?.toLong() ?: return
-        telegramLogMessageRepository.save(ownerChatId, messageId, transaction.id)
+        val users = householdRepository.findUsersInHousehold(household.id)
+        for (user in users) {
+            val response = bot.execute(SendMessage(user.chatId, text)) ?: continue
+            val messageId = response.message()?.messageId()?.toLong() ?: continue
+            telegramLogMessageRepository.save(household.id, user.chatId, messageId, transaction.id)
+        }
     }
 
     private fun handleCommentReply(chatId: Long, replyToMessageId: Long, text: String) {
@@ -250,17 +260,18 @@ class CategorizationBot(
         }
         bot.execute(
             SendMessage(chatId, "Выбери категорию для «$description»:")
-                .replyMarkup(buildSaveKeywordKeyboard(record.transactionId)),
+                .replyMarkup(buildSaveKeywordKeyboard(tx.householdId, record.transactionId)),
         )
     }
 
     private fun sendLogForDecision(txId: String, decision: Decision) {
         val tx = transactionRepository.get(txId).orElse(null) ?: return
+        val household = householdRepository.findHousehold(tx.householdId) ?: return
         val category = when (decision) {
             is Decision.Category -> categoryRepository.findById(decision.categoryId) ?: return
             Decision.Ignore -> null
         }
-        sendLog(tx, category)
+        sendLog(household, tx, category)
     }
 
     private fun startAddCategoryFlow(chatId: Long, msg: Message) {
@@ -272,13 +283,19 @@ class CategorizationBot(
         addCategoryStates[chatId] = AddCategoryState.AwaitingName(promptId)
     }
 
-    private fun handleAddCategoryStep(chatId: Long, msg: Message, rawText: String, state: AddCategoryState) {
+    private fun handleAddCategoryStep(
+        chatId: Long,
+        msg: Message,
+        rawText: String,
+        state: AddCategoryState,
+        household: Household,
+    ) {
         val text = rawText.trim()
         when (state) {
-            is AddCategoryState.AwaitingName -> handleNameStep(chatId, msg, text)
+            is AddCategoryState.AwaitingName -> handleNameStep(chatId, msg, text, household)
             is AddCategoryState.AwaitingDisplayName -> handleDisplayNameStep(chatId, msg, text, state)
             is AddCategoryState.AwaitingPriority -> handlePriorityStep(chatId, msg, text, state)
-            is AddCategoryState.AwaitingKeywords -> handleKeywordsStep(chatId, msg, text, state)
+            is AddCategoryState.AwaitingKeywords -> handleKeywordsStep(chatId, msg, text, state, household)
         }
     }
 
@@ -287,13 +304,13 @@ class CategorizationBot(
         reply(msg, "Окей, забил.")
     }
 
-    private fun handleNameStep(chatId: Long, msg: Message, name: String) {
+    private fun handleNameStep(chatId: Long, msg: Message, name: String, household: Household) {
         if (!name.matches(NAME_PATTERN)) {
             val promptId = reply(msg, "Имя должно быть из заглавных латинских букв и `_`. Попробуй ещё:") ?: return
             addCategoryStates[chatId] = AddCategoryState.AwaitingName(promptId)
             return
         }
-        if (categoryRepository.findByName(name) != null) {
+        if (categoryRepository.findByName(household.id, name) != null) {
             val promptId = reply(msg, "Категория «$name» уже существует. Дай другое имя:") ?: return
             addCategoryStates[chatId] = AddCategoryState.AwaitingName(promptId)
             return
@@ -342,6 +359,7 @@ class CategorizationBot(
         msg: Message,
         keywordsRaw: String,
         prev: AddCategoryState.AwaitingKeywords,
+        household: Household,
     ) {
         val keywords = if (keywordsRaw == EMPTY_KEYWORDS_TRIGGER) {
             emptyList()
@@ -350,6 +368,7 @@ class CategorizationBot(
         }
         val category = try {
             addCategoryUseCase.add(
+                household = household,
                 name = prev.name,
                 displayName = prev.displayName,
                 priority = prev.priority,
@@ -380,8 +399,8 @@ class CategorizationBot(
         return response?.message()?.messageId()
     }
 
-    private fun buildKeyboard(transactionId: String): InlineKeyboardMarkup {
-        val all = categoryRepository.findAll()
+    private fun buildKeyboard(householdId: UUID, transactionId: String): InlineKeyboardMarkup {
+        val all = categoryRepository.findAll(householdId)
         val regular = all.filter { !it.isOther }.sortedBy { it.sheetRow }
         val other = all.first { it.isOther }
 
@@ -401,8 +420,8 @@ class CategorizationBot(
         return InlineKeyboardMarkup(*rows.toTypedArray())
     }
 
-    private fun buildSaveKeywordKeyboard(transactionId: String): InlineKeyboardMarkup {
-        val regular = categoryRepository.findAll()
+    private fun buildSaveKeywordKeyboard(householdId: UUID, transactionId: String): InlineKeyboardMarkup {
+        val regular = categoryRepository.findAll(householdId)
             .filter { !it.isOther }
             .sortedBy { it.sheetRow }
         val rows = regular.chunked(3).map { chunk ->
@@ -413,20 +432,20 @@ class CategorizationBot(
         return InlineKeyboardMarkup(*rows.toTypedArray())
     }
 
-    private fun parseCallbackData(data: String): Parsed? {
+    private fun parseCallbackData(householdId: UUID, data: String): Parsed? {
         val parts = data.split('|')
         if (parts.firstOrNull() != "c" || parts.size != 3) return null
         val sheetRow = parts[2].toIntOrNull() ?: return null
         if (sheetRow == -1) return Parsed(parts[1], Decision.Ignore)
-        val category = categoryRepository.findBySheetRow(sheetRow) ?: return null
+        val category = categoryRepository.findBySheetRow(householdId, sheetRow) ?: return null
         return Parsed(parts[1], Decision.Category(category.id))
     }
 
-    private fun parseSaveKeywordCallback(data: String): SaveKeywordCallback? {
+    private fun parseSaveKeywordCallback(householdId: UUID, data: String): SaveKeywordCallback? {
         val parts = data.split('|')
         if (parts.firstOrNull() != "k" || parts.size != 3) return null
         val sheetRow = parts[2].toIntOrNull() ?: return null
-        val category = categoryRepository.findBySheetRow(sheetRow) ?: return null
+        val category = categoryRepository.findBySheetRow(householdId, sheetRow) ?: return null
         return SaveKeywordCallback(parts[1], category.id)
     }
 

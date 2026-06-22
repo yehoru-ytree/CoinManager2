@@ -20,6 +20,9 @@ class HouseholdRepository(
 ) {
     fun count(): Long = householdJpa.count()
 
+    fun findAllHouseholds(): List<Household> =
+        householdJpa.findAll().map { it.toDomain() }
+
     fun insertHousehold(household: Household): Household =
         householdJpa.save(household.toEntity()).toDomain()
 
@@ -31,6 +34,9 @@ class HouseholdRepository(
 
     fun findHousehold(id: UUID): Household? =
         householdJpa.findById(id).map { it.toDomain() }.orElse(null)
+
+    fun findUserById(id: UUID): BotUser? =
+        botUserJpa.findById(id).map { it.toDomain() }.orElse(null)
 
     fun findUserByChatId(chatId: Long): BotUser? =
         botUserJpa.findByChatId(chatId)?.toDomain()
