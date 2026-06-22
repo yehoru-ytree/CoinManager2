@@ -8,7 +8,12 @@ import MailAggregator.MailAggregator.common.usecases.HandleOtherExpensesUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramCommentUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramResponseUseCase
 import MailAggregator.MailAggregator.common.usecases.SaveKeywordUseCase
+import MailAggregator.MailAggregator.common.usecases.SeedDefaultCategoriesUseCase
 import MailAggregator.MailAggregator.household.repository.HouseholdRepository
+import MailAggregator.MailAggregator.household.repository.InviteTokenRepository
+import MailAggregator.MailAggregator.household.usecase.AddMonobankAccountUseCase
+import MailAggregator.MailAggregator.household.usecase.CreateHouseholdUseCase
+import MailAggregator.MailAggregator.household.usecase.JoinHouseholdUseCase
 import MailAggregator.MailAggregator.monobank.api.MonobankApi
 import MailAggregator.MailAggregator.monobank.repository.TransactionRepository
 import MailAggregator.MailAggregator.monobank.repository.TransactionStatusRepository
@@ -155,5 +160,37 @@ class Config(
         categoryRepository: CategoryRepository,
     ) = SaveKeywordUseCase(
         categoryRepository = categoryRepository,
+    )
+
+    @Bean
+    fun seedDefaultCategoriesUseCase(
+        categoryRepository: CategoryRepository,
+    ) = SeedDefaultCategoriesUseCase(
+        categoryRepository = categoryRepository,
+    )
+
+    @Bean
+    fun createHouseholdUseCase(
+        householdRepository: HouseholdRepository,
+        seedDefaultCategoriesUseCase: SeedDefaultCategoriesUseCase,
+    ) = CreateHouseholdUseCase(
+        householdRepository = householdRepository,
+        seedDefaultCategoriesUseCase = seedDefaultCategoriesUseCase,
+    )
+
+    @Bean
+    fun joinHouseholdUseCase(
+        householdRepository: HouseholdRepository,
+        inviteTokenRepository: InviteTokenRepository,
+    ) = JoinHouseholdUseCase(
+        householdRepository = householdRepository,
+        inviteTokenRepository = inviteTokenRepository,
+    )
+
+    @Bean
+    fun addMonobankAccountUseCase(
+        householdRepository: HouseholdRepository,
+    ) = AddMonobankAccountUseCase(
+        householdRepository = householdRepository,
     )
 }
