@@ -3,6 +3,7 @@ package MailAggregator.MailAggregator.telegram
 import MailAggregator.MailAggregator.common.Category
 import MailAggregator.MailAggregator.common.config.Config.Companion.TIME_ZONE
 import MailAggregator.MailAggregator.common.repository.CategoryRepository
+import MailAggregator.MailAggregator.common.usecases.AddCashTransactionUseCase
 import MailAggregator.MailAggregator.common.usecases.AddCategoryUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramCommentUseCase
 import MailAggregator.MailAggregator.common.usecases.SaveKeywordUseCase
@@ -49,6 +50,7 @@ class CategorizationBot(
     private val createHouseholdUseCase: CreateHouseholdUseCase,
     private val joinHouseholdUseCase: JoinHouseholdUseCase,
     private val addBankAccountUseCase: AddBankAccountUseCase,
+    private val addCashTransactionUseCase: AddCashTransactionUseCase,
     private val inviteTokenRepository: InviteTokenRepository,
     private val zoneId: ZoneId = TIME_ZONE,
     private val onDecision: (txId: String, decision: Decision) -> Unit,
@@ -57,6 +59,7 @@ class CategorizationBot(
     private val addCategoryStates = java.util.concurrent.ConcurrentHashMap<Long, AddCategoryState>()
     private val createHouseholdStates = java.util.concurrent.ConcurrentHashMap<Long, CreateHouseholdState>()
     private val addCardStates = java.util.concurrent.ConcurrentHashMap<Long, AddCardState>()
+    private val cashEntryStates = java.util.concurrent.ConcurrentHashMap<Long, CashEntryState>()
 
     @PostConstruct
     fun startLongPolling() {
@@ -182,6 +185,7 @@ class CategorizationBot(
 
             val addState = addCategoryStates[chatId]
             val cardState = addCardStates[chatId]
+            val cashState = cashEntryStates[chatId]
 
             if (addState != null && replyTo != null && replyTo.from()?.isBot == true &&
                 text.trim().equals(CANCEL_TRIGGER, ignoreCase = true)
@@ -196,6 +200,13 @@ class CategorizationBot(
                 reply(msg, "Окей, забил.")
                 return
             }
+            if (cashState != null && replyTo != null && replyTo.from()?.isBot == true &&
+                text.trim().equals(CANCEL_TRIGGER, ignoreCase = true)
+            ) {
+                cashEntryStates.remove(chatId)
+                reply(msg, "Окей, забил.")
+                return
+            }
 
             if (addState != null && replyTo != null && replyTo.messageId() == addState.lastPromptMessageId) {
                 handleAddCategoryStep(chatId, msg, text, addState, household)
@@ -203,6 +214,10 @@ class CategorizationBot(
             }
             if (cardState != null && replyTo != null && replyTo.messageId() == cardState.lastPromptMessageId) {
                 handleAddCardStep(chatId, msg, text, cardState, user)
+                return
+            }
+            if (cashState != null && replyTo != null && replyTo.messageId() == cashState.lastPromptMessageId) {
+                handleCashEntryStep(chatId, msg, text, cashState, household)
                 return
             }
 
@@ -216,6 +231,11 @@ class CategorizationBot(
             if (replyTo == null && text.trim().equals(ADD_CARD_TRIGGER, ignoreCase = true)) {
                 resetAllFlows(chatId, msg, restarting = cardState != null)
                 startAddCardFlow(chatId, msg)
+                return
+            }
+            if (replyTo == null && text.trim().equals(CASH_TRIGGER, ignoreCase = true)) {
+                resetAllFlows(chatId, msg, restarting = cashState != null)
+                startCashEntryFlow(chatId, msg)
                 return
             }
             if (replyTo == null && text.trim().equals(INVITE_TRIGGER, ignoreCase = true)) {
@@ -261,7 +281,8 @@ class CategorizationBot(
     private fun resetAllFlows(chatId: Long, msg: Message, restarting: Boolean) {
         val hadFlow = addCategoryStates.remove(chatId) != null ||
             createHouseholdStates.remove(chatId) != null ||
-            addCardStates.remove(chatId) != null
+            addCardStates.remove(chatId) != null ||
+            cashEntryStates.remove(chatId) != null
         if (hadFlow && restarting) {
             reply(msg, "ℹ️ Старый флоу прерван, ничего не сохранено. Начинаю заново.")
         } else if (hadFlow) {
@@ -426,6 +447,60 @@ class CategorizationBot(
                 )
             }
         }
+    }
+
+    // ----- Cash entry flow -----
+
+    private fun startCashEntryFlow(chatId: Long, msg: Message) {
+        val promptId = reply(
+            msg,
+            "Введи сумму трат наличкой (например 245.50 или 245). " +
+                "На любом шаге ответь «$CANCEL_TRIGGER» чтобы выйти.",
+        ) ?: return
+        cashEntryStates[chatId] = CashEntryState.AwaitingAmount(promptId)
+    }
+
+    private fun handleCashEntryStep(
+        chatId: Long,
+        msg: Message,
+        rawText: String,
+        state: CashEntryState,
+        household: Household,
+    ) {
+        val amount = parseAmount(rawText)
+        if (amount == null) {
+            val promptId = reply(msg, "Не понял. Введи положительное число — сумму в гривнах:") ?: return
+            cashEntryStates[chatId] = CashEntryState.AwaitingAmount(promptId)
+            return
+        }
+        val tx = try {
+            addCashTransactionUseCase.add(household.id, amount)
+        } catch (e: Exception) {
+            println("Failed to add cash transaction for chat $chatId: ${e.message}")
+            cashEntryStates.remove(chatId)
+            reply(msg, "❌ Не получилось записать: ${e.message}")
+            return
+        }
+        cashEntryStates.remove(chatId)
+        // Reuse the categorisation prompt path — bot broadcasts the keyboard to all household
+        // members; whoever taps a category triggers the standard merge-into-sheet + log pipeline.
+        sendTx(
+            CategorizationRequest(
+                transactionId = tx.id,
+                householdId = tx.householdId,
+                amount = "%.2f ₴".format(amount),
+                description = tx.description,
+                transactionTime = Instant.ofEpochSecond(tx.time)
+                    .atZone(zoneId)
+                    .toLocalDateTime().toString(),
+            ),
+        )
+    }
+
+    private fun parseAmount(raw: String): Double? {
+        val normalized = raw.trim().replace(',', '.')
+        val value = normalized.toDoubleOrNull() ?: return null
+        return value.takeIf { it > 0.0 }
     }
 
     // ----- Existing categorization callbacks -----
@@ -806,6 +881,12 @@ class CategorizationBot(
         ) : AddCardState()
     }
 
+    private sealed class CashEntryState {
+        abstract val lastPromptMessageId: Int
+
+        data class AwaitingAmount(override val lastPromptMessageId: Int) : CashEntryState()
+    }
+
     private data class Parsed(val txId: String, val decision: Decision)
     private data class SaveKeywordCallback(val txId: String, val categoryId: UUID)
 
@@ -819,6 +900,7 @@ class CategorizationBot(
         private const val ADD_CATEGORY_TRIGGER = "Добавить категорию"
         private const val CREATE_HOUSEHOLD_TRIGGER = "Создать таблицу"
         private const val ADD_CARD_TRIGGER = "Привязать карту"
+        private const val CASH_TRIGGER = "Наличка"
         private const val INVITE_TRIGGER = "Пригласить"
         private const val JOIN_TRIGGER = "Присоединиться"
         private const val CANCEL_TRIGGER = "Забей"
@@ -842,6 +924,7 @@ class CategorizationBot(
             «Привязать карту» — пошаговый диалог привязки Monobank-токена + accountId.
             «Пригласить» — сгенерировать одноразовый код, чтобы пригласить кого-то.
             «Добавить категорию» — пошаговый диалог создания новой категории.
+            «Наличка» — записать трату наличкой: введи сумму → выбери категорию из клавиатуры.
 
             ── Реплаи на лог транзакции ──
             • «Сохранить» — клавиатура выбора категории; description пойдёт в её keywords.
