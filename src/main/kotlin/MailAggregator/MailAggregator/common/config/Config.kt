@@ -1,5 +1,10 @@
 package MailAggregator.MailAggregator.common.config
 
+import MailAggregator.MailAggregator.bank.BankApi
+import MailAggregator.MailAggregator.bank.BankType
+import MailAggregator.MailAggregator.bank.repository.BankAccountRepository
+import MailAggregator.MailAggregator.bank.repository.TransactionRepository
+import MailAggregator.MailAggregator.bank.repository.TransactionStatusRepository
 import MailAggregator.MailAggregator.common.repository.CategoryRepository
 import MailAggregator.MailAggregator.common.usecases.AddCategoryUseCase
 import MailAggregator.MailAggregator.common.usecases.CategorizeExpenseUseCase
@@ -11,18 +16,15 @@ import MailAggregator.MailAggregator.common.usecases.SaveKeywordUseCase
 import MailAggregator.MailAggregator.common.usecases.SeedDefaultCategoriesUseCase
 import MailAggregator.MailAggregator.household.repository.HouseholdRepository
 import MailAggregator.MailAggregator.household.repository.InviteTokenRepository
-import MailAggregator.MailAggregator.household.usecase.AddMonobankAccountUseCase
+import MailAggregator.MailAggregator.household.usecase.AddBankAccountUseCase
 import MailAggregator.MailAggregator.household.usecase.CreateHouseholdUseCase
 import MailAggregator.MailAggregator.household.usecase.JoinHouseholdUseCase
-import MailAggregator.MailAggregator.monobank.api.MonobankApi
-import MailAggregator.MailAggregator.monobank.repository.TransactionRepository
-import MailAggregator.MailAggregator.monobank.repository.TransactionStatusRepository
 import MailAggregator.MailAggregator.spreadsheet.usecase.VerifyMonthSheetExistsUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.AppendCommentToSheetUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.GetSpendingsByDateUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.HandleNotProcessedTransactionsUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.MergeSpendingsByDateUseCase
-import MailAggregator.MailAggregator.spreadsheet.usecases.ProcessIncomingMonobankTransactionsUseCase
+import MailAggregator.MailAggregator.spreadsheet.usecases.ProcessIncomingBankTransactionsUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.UpdateSpendingsByDateUseCase
 import MailAggregator.MailAggregator.spreadsheet.util.SheetRequester
 import MailAggregator.MailAggregator.telegram.CategorizationBot
@@ -70,26 +72,30 @@ class Config(
         transactionStatusRepository = transactionStatusRepository,
     )
 
+    /** Spring collects every `BankApi` implementation on the classpath into the `bankApis` list;
+     *  we key by `bankType` so the polling job can dispatch each account to its bank's impl. */
     @Bean
-    fun processIncomingMonobankTransactionsUseCase(
-        monobankApi: MonobankApi,
+    fun processIncomingBankTransactionsUseCase(
+        bankApis: List<BankApi>,
         handleNotProcessedTransactionsUseCase: HandleNotProcessedTransactionsUseCase,
         categorizeExpenseUseCase: CategorizeExpenseUseCase,
         mergeSpendingsByDateUseCase: MergeSpendingsByDateUseCase,
         executeTransactionsUseCase: ExecuteTransactionsUseCase,
         handleOtherExpensesUseCase: HandleOtherExpensesUseCase,
         categoryRepository: CategoryRepository,
+        bankAccountRepository: BankAccountRepository,
         householdRepository: HouseholdRepository,
         categorizationBot: CategorizationBot,
         @Value("\${monobank.statement-window-minutes}") statementWindowMinutes: Long,
-    ) = ProcessIncomingMonobankTransactionsUseCase(
-        monobankApi = monobankApi,
+    ) = ProcessIncomingBankTransactionsUseCase(
+        bankApis = bankApis.associateBy(BankApi::bankType),
         handleNotProcessedTransactionsUseCase = handleNotProcessedTransactionsUseCase,
         categorizeExpenseUseCase = categorizeExpenseUseCase,
         executeTransactionsUseCase = executeTransactionsUseCase,
         mergeSpendingsByDateUseCase = mergeSpendingsByDateUseCase,
         handleOtherExpensesUseCase = handleOtherExpensesUseCase,
         categoryRepository = categoryRepository,
+        bankAccountRepository = bankAccountRepository,
         householdRepository = householdRepository,
         categorizationBot = categorizationBot,
         statementWindowMinutes = statementWindowMinutes,
@@ -188,9 +194,9 @@ class Config(
     )
 
     @Bean
-    fun addMonobankAccountUseCase(
-        householdRepository: HouseholdRepository,
-    ) = AddMonobankAccountUseCase(
-        householdRepository = householdRepository,
+    fun addBankAccountUseCase(
+        bankAccountRepository: BankAccountRepository,
+    ) = AddBankAccountUseCase(
+        bankAccountRepository = bankAccountRepository,
     )
 }

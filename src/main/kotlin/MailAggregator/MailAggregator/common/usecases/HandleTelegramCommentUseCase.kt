@@ -1,8 +1,8 @@
 package MailAggregator.MailAggregator.common.usecases
 
+import MailAggregator.MailAggregator.bank.repository.TransactionRepository
 import MailAggregator.MailAggregator.common.config.Config.Companion.TIME_ZONE
 import MailAggregator.MailAggregator.household.repository.HouseholdRepository
-import MailAggregator.MailAggregator.monobank.repository.TransactionRepository
 import MailAggregator.MailAggregator.spreadsheet.usecases.AppendCommentToSheetUseCase
 import MailAggregator.MailAggregator.telegram.repository.TelegramLogMessageRepository
 import java.time.Instant
@@ -19,7 +19,7 @@ class HandleTelegramCommentUseCase(
         val transaction = transactionRepository.get(record.transactionId).orElse(null) ?: return false
         val household = householdRepository.findHousehold(transaction.householdId) ?: return false
 
-        val date = Instant.ofEpochSecond(transaction.raw.time)
+        val date = Instant.ofEpochSecond(transaction.time)
             .atZone(TIME_ZONE)
             .toLocalDate()
 

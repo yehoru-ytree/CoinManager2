@@ -10,13 +10,14 @@ import MailAggregator.MailAggregator.household.BotUser
 import MailAggregator.MailAggregator.household.Household
 import MailAggregator.MailAggregator.household.repository.HouseholdRepository
 import MailAggregator.MailAggregator.household.repository.InviteTokenRepository
-import MailAggregator.MailAggregator.household.usecase.AddMonobankAccountUseCase
+import MailAggregator.MailAggregator.household.usecase.AddBankAccountUseCase
 import MailAggregator.MailAggregator.household.usecase.CreateHouseholdUseCase
 import MailAggregator.MailAggregator.household.usecase.JoinHouseholdUseCase
-import MailAggregator.MailAggregator.monobank.application.MonoTransaction
-import MailAggregator.MailAggregator.monobank.application.TransactionStatus
-import MailAggregator.MailAggregator.monobank.repository.TransactionRepository
-import MailAggregator.MailAggregator.monobank.repository.TransactionStatusRepository
+import MailAggregator.MailAggregator.bank.BankType
+import MailAggregator.MailAggregator.bank.Transaction
+import MailAggregator.MailAggregator.bank.TransactionStatus
+import MailAggregator.MailAggregator.bank.repository.TransactionRepository
+import MailAggregator.MailAggregator.bank.repository.TransactionStatusRepository
 import MailAggregator.MailAggregator.telegram.model.CategorizationRequest
 import MailAggregator.MailAggregator.telegram.repository.TelegramLogMessageRepository
 import com.pengrad.telegrambot.TelegramBot
@@ -47,7 +48,7 @@ class CategorizationBot(
     private val householdRepository: HouseholdRepository,
     private val createHouseholdUseCase: CreateHouseholdUseCase,
     private val joinHouseholdUseCase: JoinHouseholdUseCase,
-    private val addMonobankAccountUseCase: AddMonobankAccountUseCase,
+    private val addBankAccountUseCase: AddBankAccountUseCase,
     private val inviteTokenRepository: InviteTokenRepository,
     private val zoneId: ZoneId = TIME_ZONE,
     private val onDecision: (txId: String, decision: Decision) -> Unit,
@@ -90,16 +91,16 @@ class CategorizationBot(
         }
     }
 
-    fun sendLog(household: Household, transaction: MonoTransaction, category: Category?) {
-        val zoned = Instant.ofEpochSecond(transaction.raw.time).atZone(zoneId)
+    fun sendLog(household: Household, transaction: Transaction, category: Category?) {
+        val zoned = Instant.ofEpochSecond(transaction.time).atZone(zoneId)
         val date = zoned.format(DATE_FORMAT)
         val time = zoned.format(TIME_FORMAT)
-        val amount = "%.2f".format(-transaction.raw.amount.toDouble() / 100.0)
-        val currency = currencyCode(transaction.raw.currencyCode)
+        val amount = "%.2f".format(-transaction.amount.toDouble() / 100.0)
+        val currency = currencyCode(transaction.currencyCode)
         val tail = category?.let { "Категория: ${it.displayName}" } ?: "Игнорировано"
 
         val text = buildString {
-            appendLine("🧾 ${transaction.raw.description}")
+            appendLine("🧾 ${transaction.description}")
             appendLine("$date $time  −$amount $currency")
             append(tail)
         }
@@ -407,7 +408,9 @@ class CategorizationBot(
                     return
                 }
                 try {
-                    addMonobankAccountUseCase.add(user, state.token, text)
+                    // "Привязать карту" flow asks only for Monobank credentials for now. Multi-bank
+                    // picker will land alongside the PrivatBank impl.
+                    addBankAccountUseCase.add(user, BankType.MONOBANK, state.token, text)
                 } catch (e: Exception) {
                     println("Failed to add Monobank account for chat $chatId: ${e.message}")
                     addCardStates.remove(chatId)
@@ -490,7 +493,7 @@ class CategorizationBot(
             bot.execute(AnswerCallbackQuery(cq.id()).text("Tx not found"))
             return
         }
-        val result = saveKeywordUseCase(parsed.categoryId, tx.raw.description)
+        val result = saveKeywordUseCase(parsed.categoryId, tx.description)
         val message = cq.message()
         if (message != null) {
             bot.execute(EditMessageReplyMarkup(chatId, message.messageId()))
@@ -541,7 +544,7 @@ class CategorizationBot(
             bot.execute(SendMessage(chatId, "❌ Транзакция не найдена в БД"))
             return
         }
-        val description = tx.raw.description.trim()
+        val description = tx.description.trim()
         if (description.isEmpty()) {
             bot.execute(SendMessage(chatId, "❌ У транзакции пустое описание, нечего сохранять"))
             return
