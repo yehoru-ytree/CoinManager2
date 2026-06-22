@@ -3,6 +3,7 @@ package MailAggregator.MailAggregator.telegram
 import MailAggregator.MailAggregator.bank.repository.TransactionRepository
 import MailAggregator.MailAggregator.bank.repository.TransactionStatusRepository
 import MailAggregator.MailAggregator.common.repository.CategoryRepository
+import MailAggregator.MailAggregator.common.usecases.AddCashTransactionUseCase
 import MailAggregator.MailAggregator.common.usecases.AddCategoryUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramCommentUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramResponseUseCase
@@ -33,6 +34,7 @@ class TelegramConfig {
         createHouseholdUseCase: CreateHouseholdUseCase,
         joinHouseholdUseCase: JoinHouseholdUseCase,
         addBankAccountUseCase: AddBankAccountUseCase,
+        addCashTransactionUseCase: AddCashTransactionUseCase,
         inviteTokenRepository: InviteTokenRepository,
         @Value("\${telegram.bot-token}") botToken: String,
     ) = CategorizationBot(
@@ -48,6 +50,7 @@ class TelegramConfig {
         createHouseholdUseCase = createHouseholdUseCase,
         joinHouseholdUseCase = joinHouseholdUseCase,
         addBankAccountUseCase = addBankAccountUseCase,
+        addCashTransactionUseCase = addCashTransactionUseCase,
         inviteTokenRepository = inviteTokenRepository,
         onDecision = { transactionId, decision ->
             handleTelegramResponseUseCase(transactionId, decision)

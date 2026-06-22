@@ -6,6 +6,7 @@ import MailAggregator.MailAggregator.bank.repository.BankAccountRepository
 import MailAggregator.MailAggregator.bank.repository.TransactionRepository
 import MailAggregator.MailAggregator.bank.repository.TransactionStatusRepository
 import MailAggregator.MailAggregator.common.repository.CategoryRepository
+import MailAggregator.MailAggregator.common.usecases.AddCashTransactionUseCase
 import MailAggregator.MailAggregator.common.usecases.AddCategoryUseCase
 import MailAggregator.MailAggregator.common.usecases.CategorizeExpenseUseCase
 import MailAggregator.MailAggregator.common.usecases.ExecuteTransactionsUseCase
@@ -198,5 +199,14 @@ class Config(
         bankAccountRepository: BankAccountRepository,
     ) = AddBankAccountUseCase(
         bankAccountRepository = bankAccountRepository,
+    )
+
+    @Bean
+    fun addCashTransactionUseCase(
+        transactionRepository: TransactionRepository,
+        transactionStatusRepository: TransactionStatusRepository,
+    ) = AddCashTransactionUseCase(
+        transactionRepository = transactionRepository,
+        transactionStatusRepository = transactionStatusRepository,
     )
 }
