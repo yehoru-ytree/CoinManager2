@@ -319,7 +319,10 @@ class CategorizationBot(
             reply(msg, t("flow.alreadyInHousehold"))
             return
         }
-        val promptId = reply(msg, t("createHousehold.start", cancelTrigger)) ?: return
+        val promptId = reply(
+            msg,
+            t("createHousehold.start", cancelTrigger, authentication.serviceAccountEmail),
+        ) ?: return
         createHouseholdStates[chatId] = CreateHouseholdState.AwaitingSheetId(promptId)
     }
 
