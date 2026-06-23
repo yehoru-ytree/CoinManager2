@@ -60,6 +60,7 @@ class CategorizationBot(
     private val inviteTokenRepository: InviteTokenRepository,
     private val authentication: Authentication,
     private val monobankApi: MonobankApi,
+    private val ingestEmail: String,
     private val messageSource: MessageSource,
     private val zoneId: ZoneId = TIME_ZONE,
     private val onDecision: (txId: String, decision: Decision) -> Unit,
@@ -296,7 +297,7 @@ class CategorizationBot(
         when (data.firstOrNull()) {
             'c' -> handleCategorizationCallback(cq, chatId, user, data)
             'k' -> handleSaveKeywordCallback(cq, chatId, user, data)
-            'b' -> handleBankPickerCallback(cq, chatId, data)
+            'b' -> handleBankPickerCallback(cq, chatId, user, data)
             'm' -> handleMonoAccountCallback(cq, chatId, user, data)
             else -> bot.execute(AnswerCallbackQuery(cq.id()).text(t("callback.badCallback")))
         }
@@ -404,31 +405,90 @@ class CategorizationBot(
         addCardStates[chatId] = AddCardState.AwaitingBankChoice(promptId)
     }
 
-    private fun handleBankPickerCallback(cq: CallbackQuery, chatId: Long, data: String) {
+    private fun handleBankPickerCallback(cq: CallbackQuery, chatId: Long, user: BotUser, data: String) {
         val state = addCardStates[chatId] as? AddCardState.AwaitingBankChoice
         val pickerMsg = cq.message()
         if (state == null || pickerMsg == null || pickerMsg.messageId() != state.lastPromptMessageId) {
             bot.execute(AnswerCallbackQuery(cq.id()).text(t("callback.alreadyDone")))
             return
         }
-        val parts = data.split('|')
-        val choice = parts.getOrNull(1)
+        val choice = data.split('|').getOrNull(1)
         bot.execute(EditMessageReplyMarkup(chatId, pickerMsg.messageId()))
         bot.execute(AnswerCallbackQuery(cq.id()))
 
-        val (text, nextState) = when (choice) {
-            "mono" -> t("addCard.mono.askToken") to { id: Int -> AddCardState.Mono.AwaitingToken(id) as AddCardState }
-            "privat" -> t("addCard.privat.askToken") to { id: Int -> AddCardState.Privat.AwaitingToken(id) as AddCardState }
+        when (choice) {
+            "mono" -> {
+                val promptId = bot.execute(
+                    SendMessage(chatId, t("addCard.mono.askToken"))
+                        .replyParameters(ReplyParameters(pickerMsg.messageId())),
+                )?.message()?.messageId() ?: return
+                addCardStates[chatId] = AddCardState.Mono.AwaitingToken(promptId)
+            }
+            "privat" -> {
+                addCardStates.remove(chatId)
+                startPrivatEmailOnboarding(chatId, pickerMsg, cq.from(), user)
+            }
             else -> {
                 addCardStates.remove(chatId)
                 bot.execute(SendMessage(chatId, t("addCard.bankNotFound")))
+            }
+        }
+    }
+
+    // PrivatBank doesn't expose a personal HTTP API; instead the user configures a Gmail filter
+    // that forwards Privat's notification emails to a per-user alias of our ingest mailbox. The
+    // bot just generates that suffix, persists the (user, suffix) link as a BankAccount row, and
+    // sends the user the one-time setup instructions. Verification of the Gmail forwarding
+    // address is handled silently by PrivatEmailIngestor.
+    private fun startPrivatEmailOnboarding(
+        chatId: Long,
+        replyTo: Message,
+        tgUser: com.pengrad.telegrambot.model.User?,
+        user: BotUser,
+    ) {
+        val existing = addBankAccountUseCase.findFirstPrivatForUser(user)
+        val suffix = existing?.accountId ?: generatePrivatAliasSuffix(tgUser)
+        if (existing == null) {
+            try {
+                addBankAccountUseCase.add(user, BankType.PRIVATBANK, token = "", accountId = suffix, clientId = null)
+            } catch (e: Exception) {
+                println("Failed to register Privat email link for chat $chatId: ${e.message}")
+                bot.execute(
+                    SendMessage(chatId, t("addCard.failed", e.message ?: ""))
+                        .replyParameters(ReplyParameters(replyTo.messageId())),
+                )
                 return
             }
         }
-        val promptId = bot.execute(
-            SendMessage(chatId, text).replyParameters(ReplyParameters(pickerMsg.messageId())),
-        )?.message()?.messageId() ?: return
-        addCardStates[chatId] = nextState(promptId)
+        val aliasEmail = composeAliasEmail(suffix)
+        bot.execute(
+            SendMessage(chatId, t("addCard.privat.instructions", aliasEmail))
+                .replyParameters(ReplyParameters(replyTo.messageId())),
+        )
+        if (existing == null) {
+            broadcastInfo(
+                user.householdId,
+                excludeChatId = chatId,
+                text = t("addCard.broadcast", displayNameOf(tgUser)),
+            )
+        }
+    }
+
+    private fun generatePrivatAliasSuffix(tgUser: com.pengrad.telegrambot.model.User?): String {
+        val base = (tgUser?.firstName() ?: tgUser?.username() ?: "user")
+            .lowercase()
+            .replace(Regex("[^a-z0-9]"), "")
+            .take(12)
+            .ifBlank { "user" }
+        val random = (0 until 4).map { "0123456789abcdef".random() }.joinToString("")
+        return "$base-$random"
+    }
+
+    private fun composeAliasEmail(suffix: String): String {
+        val (local, domain) = ingestEmail.split('@', limit = 2).let {
+            if (it.size == 2) it[0] to it[1] else ingestEmail to "gmail.com"
+        }
+        return "$local+$suffix@$domain"
     }
 
     private fun handleAddCardStep(
@@ -443,7 +503,6 @@ class CategorizationBot(
             // Picker phase consumes a button tap, not a text reply — ignore stray text replies.
             is AddCardState.AwaitingBankChoice -> return
             is AddCardState.Mono -> handleMonoStep(chatId, msg, text, state, user)
-            is AddCardState.Privat -> handlePrivatStep(chatId, msg, text, state, user)
         }
     }
 
@@ -497,52 +556,6 @@ class CategorizationBot(
                 }
             }
             is AddCardState.Mono.AwaitingAccountChoice -> return // tap, not text
-        }
-    }
-
-    private fun handlePrivatStep(
-        chatId: Long,
-        msg: Message,
-        text: String,
-        state: AddCardState.Privat,
-        user: BotUser,
-    ) {
-        when (state) {
-            is AddCardState.Privat.AwaitingToken -> {
-                if (text.isEmpty()) {
-                    val promptId = reply(msg, t("addCard.privat.emptyToken")) ?: return
-                    addCardStates[chatId] = AddCardState.Privat.AwaitingToken(promptId)
-                    return
-                }
-                val promptId = reply(msg, t("addCard.privat.askClientId")) ?: return
-                addCardStates[chatId] = AddCardState.Privat.AwaitingClientId(promptId, text)
-            }
-            is AddCardState.Privat.AwaitingClientId -> {
-                if (text.isEmpty()) {
-                    val promptId = reply(msg, t("addCard.privat.emptyClientId")) ?: return
-                    addCardStates[chatId] = AddCardState.Privat.AwaitingClientId(promptId, state.token)
-                    return
-                }
-                val promptId = reply(msg, t("addCard.privat.askIban")) ?: return
-                addCardStates[chatId] = AddCardState.Privat.AwaitingIban(promptId, state.token, text)
-            }
-            is AddCardState.Privat.AwaitingIban -> {
-                if (text.isEmpty()) {
-                    val promptId = reply(msg, t("addCard.privat.emptyIban")) ?: return
-                    addCardStates[chatId] = AddCardState.Privat.AwaitingIban(promptId, state.token, state.clientId)
-                    return
-                }
-                val iban = text.replace(" ", "").uppercase()
-                if (!IBAN_PATTERN.matches(iban)) {
-                    val promptId = reply(msg, t("addCard.privat.badIban")) ?: return
-                    addCardStates[chatId] = AddCardState.Privat.AwaitingIban(promptId, state.token, state.clientId)
-                    return
-                }
-                persistBankAccount(
-                    chatId, msg, user, BankType.PRIVATBANK,
-                    token = state.token, accountId = iban, clientId = state.clientId,
-                )
-            }
         }
     }
 
@@ -1047,18 +1060,6 @@ class CategorizationBot(
             ) : Mono()
         }
 
-        sealed class Privat : AddCardState() {
-            data class AwaitingToken(override val lastPromptMessageId: Int) : Privat()
-            data class AwaitingClientId(
-                override val lastPromptMessageId: Int,
-                val token: String,
-            ) : Privat()
-            data class AwaitingIban(
-                override val lastPromptMessageId: Int,
-                val token: String,
-                val clientId: String,
-            ) : Privat()
-        }
     }
 
     private sealed class CashEntryState {
@@ -1084,7 +1085,6 @@ class CategorizationBot(
     companion object {
         private val DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
         private val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
-        private val IBAN_PATTERN: Regex = Regex("^UA[0-9]{27}$")
         private val SHEETS_URL_PATTERN: Regex =
             Regex("""docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]+)""")
 

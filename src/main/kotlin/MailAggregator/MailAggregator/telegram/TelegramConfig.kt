@@ -43,6 +43,7 @@ class TelegramConfig {
         monobankApi: MonobankApi,
         messageSource: MessageSource,
         @Value("\${telegram.bot-token}") botToken: String,
+        @Value("\${email.imap.user:}") ingestEmail: String,
     ) = CategorizationBot(
         token = botToken,
         categoryRepository = categoryRepository,
@@ -60,6 +61,7 @@ class TelegramConfig {
         inviteTokenRepository = inviteTokenRepository,
         authentication = authentication,
         monobankApi = monobankApi,
+        ingestEmail = ingestEmail,
         messageSource = messageSource,
         onDecision = { transactionId, decision ->
             handleTelegramResponseUseCase(transactionId, decision)
