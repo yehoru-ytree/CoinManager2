@@ -105,9 +105,13 @@ class PrivatEmailIngestor(
         val txTimeSec = (msg.sentDate ?: msg.receivedDate)?.time?.let { it / 1000 } ?: (System.currentTimeMillis() / 1000)
 
         val tx = PrivatEmailParser.parse(body, household.id, txTimeSec, txId) ?: run {
-            // Self-transfer or incoming: parser returned null. Still mark as seen — it's a known
-            // pattern we explicitly chose to skip, no point re-reading next poll.
-            return true
+            // Parser returns null for known-skip cases (self-transfer, incoming) AND for anything
+            // it didn't recognise. We can't distinguish the two without colour-coding, so log the
+            // body and DON'T mark seen — easier to spot a regex gap than to dig out the email
+            // from Gmail later. Real self-transfers will keep re-logging until the parser is
+            // taught to distinguish them as a positive skip.
+            println("PrivatEmail: unparsed transaction email. Subject='${msg.subject}', body='${body.take(1000)}'")
+            return false
         }
 
         processIncomingBankTransactionsUseCase.processTransactionsForHousehold(household, listOf(tx))
@@ -218,6 +222,6 @@ class PrivatEmailIngestor(
         private const val GMAIL_FORWARDING_SENDER = "forwarding-noreply@google.com"
         // Gmail's "approve forwarding" URL — `vf-...` is the verify prefix. The matching `uf-...`
         // is the cancel/unverify link which we deliberately do NOT forward.
-        private val GMAIL_APPROVE_URL = Regex("""https://mail-settings\.google\.com/mail/vf-[\w%-]+""")
+        private val GMAIL_APPROVE_URL = Regex("""https://(?:mail-settings|mail)\.google\.com/mail/vf-[\w%-]+""")
     }
 }
