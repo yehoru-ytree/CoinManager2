@@ -340,8 +340,9 @@ class CategorizationBot(
                     createHouseholdStates[chatId] = CreateHouseholdState.AwaitingSheetId(promptId)
                     return
                 }
+                val sheetId = extractSheetId(text)
                 val result = try {
-                    createHouseholdUseCase.create(chatId, text)
+                    createHouseholdUseCase.create(chatId, sheetId)
                 } catch (e: Exception) {
                     println("Failed to create household for chat $chatId: ${e.message}")
                     createHouseholdStates.remove(chatId)
@@ -1012,10 +1013,18 @@ class CategorizationBot(
         data object Ignore : Decision()
     }
 
+    // Accept either a full Google Sheets URL ("https://docs.google.com/spreadsheets/d/{ID}/edit…")
+    // or a bare ID. Falling back to the trimmed input keeps backward compatibility for users who
+    // already know the drill and paste only the ID.
+    private fun extractSheetId(input: String): String =
+        SHEETS_URL_PATTERN.find(input)?.groupValues?.get(1) ?: input.trim()
+
     companion object {
         private val DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
         private val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
         private val IBAN_PATTERN: Regex = Regex("^UA[0-9]{27}$")
+        private val SHEETS_URL_PATTERN: Regex =
+            Regex("""docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]+)""")
 
         private fun currencyCode(numericCode: Int): String = when (numericCode) {
             980 -> "UAH"
