@@ -562,6 +562,7 @@ class CategorizationBot(
         persistBankAccount(
             chatId, pickerMsg, user, BankType.MONOBANK,
             token = state.token, accountId = accountId, clientId = null,
+            actorDisplayName = displayNameOf(cq.from()),
         )
     }
 
@@ -582,6 +583,7 @@ class CategorizationBot(
         token: String,
         accountId: String,
         clientId: String?,
+        actorDisplayName: String = displayNameOf(msg),
     ) {
         try {
             addBankAccountUseCase.add(user, bankType, token, accountId, clientId)
@@ -596,7 +598,7 @@ class CategorizationBot(
         broadcastInfo(
             user.householdId,
             excludeChatId = chatId,
-            text = t("addCard.broadcast", displayNameOf(msg)),
+            text = t("addCard.broadcast", actorDisplayName),
         )
     }
 
@@ -950,9 +952,11 @@ class CategorizationBot(
             }
     }
 
-    private fun displayNameOf(msg: Message): String =
-        msg.from()?.firstName()?.takeIf { it.isNotBlank() }
-            ?: msg.from()?.username()?.takeIf { it.isNotBlank() }
+    private fun displayNameOf(msg: Message): String = displayNameOf(msg.from())
+
+    private fun displayNameOf(tgUser: com.pengrad.telegrambot.model.User?): String =
+        tgUser?.firstName()?.takeIf { it.isNotBlank() }
+            ?: tgUser?.username()?.takeIf { it.isNotBlank() }
             ?: t("displayName.unknown")
 
     private fun buildKeyboard(householdId: UUID, transactionId: String): InlineKeyboardMarkup {
