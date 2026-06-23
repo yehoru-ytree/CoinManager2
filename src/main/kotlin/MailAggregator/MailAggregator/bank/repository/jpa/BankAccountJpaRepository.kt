@@ -7,4 +7,6 @@ interface BankAccountJpaRepository : JpaRepository<BankAccountJpaEntity, UUID> {
     fun findAllByUserId(userId: UUID): List<BankAccountJpaEntity>
 
     fun findByBankTypeAndAccountId(bankType: String, accountId: String): BankAccountJpaEntity?
+
+    fun findByBankTypeAndToken(bankType: String, token: String): BankAccountJpaEntity?
 }
