@@ -337,17 +337,8 @@ class CategorizationBot(
                     createHouseholdStates[chatId] = CreateHouseholdState.AwaitingSheetId(promptId)
                     return
                 }
-                val promptId = reply(msg, t("createHousehold.askTemplate")) ?: return
-                createHouseholdStates[chatId] = CreateHouseholdState.AwaitingTemplateTitle(promptId, text)
-            }
-            is CreateHouseholdState.AwaitingTemplateTitle -> {
-                if (text.isEmpty()) {
-                    val promptId = reply(msg, t("createHousehold.emptyTemplate")) ?: return
-                    createHouseholdStates[chatId] = CreateHouseholdState.AwaitingTemplateTitle(promptId, state.sheetId)
-                    return
-                }
                 val result = try {
-                    createHouseholdUseCase.create(chatId, state.sheetId, text)
+                    createHouseholdUseCase.create(chatId, text)
                 } catch (e: Exception) {
                     println("Failed to create household for chat $chatId: ${e.message}")
                     createHouseholdStates.remove(chatId)
@@ -975,10 +966,6 @@ class CategorizationBot(
         abstract val lastPromptMessageId: Int
 
         data class AwaitingSheetId(override val lastPromptMessageId: Int) : CreateHouseholdState()
-        data class AwaitingTemplateTitle(
-            override val lastPromptMessageId: Int,
-            val sheetId: String,
-        ) : CreateHouseholdState()
     }
 
     private sealed class AddCardState {
