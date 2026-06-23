@@ -4,6 +4,7 @@ import MailAggregator.MailAggregator.bank.BankType
 import MailAggregator.MailAggregator.bank.repository.BankAccountRepository
 import MailAggregator.MailAggregator.household.repository.HouseholdRepository
 import MailAggregator.MailAggregator.spreadsheet.usecases.ProcessIncomingBankTransactionsUseCase
+import MailAggregator.MailAggregator.telegram.CategorizationBot
 import jakarta.mail.Folder
 import jakarta.mail.Message
 import jakarta.mail.Multipart
@@ -20,8 +21,6 @@ import jakarta.mail.search.SearchTerm
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
-import org.springframework.web.client.RestClient
-import org.springframework.web.client.body
 import java.io.ByteArrayOutputStream
 import java.util.Properties
 
@@ -46,8 +45,8 @@ class PrivatEmailIngestor(
     private val bankAccountRepository: BankAccountRepository,
     private val householdRepository: HouseholdRepository,
     private val processIncomingBankTransactionsUseCase: ProcessIncomingBankTransactionsUseCase,
+    private val categorizationBot: CategorizationBot,
 ) {
-    private val restClient: RestClient = RestClient.create()
 
     @Scheduled(fixedDelayString = "\${email.imap.poll-interval}")
     fun ingest() {
@@ -116,16 +115,34 @@ class PrivatEmailIngestor(
     }
 
     private fun handleGmailForwardingConfirmation(msg: Message): Boolean {
+        // Anonymous GET on the verification URL is blocked by Google ("Temporary Error 2477" —
+        // their anti-abuse refuses to auto-verify forwarding addresses without a logged-in
+        // session). Instead extract the confirmation code from the body and DM it to the user
+        // who set up the forwarding — they paste it into Gmail UI manually.
         val body = extractTextBody(msg)
-        val url = GMAIL_CONFIRMATION_URL.find(body)?.value ?: run {
-            println("PrivatEmail: Gmail confirmation but no verification URL found in body")
+        val code = GMAIL_CONFIRMATION_CODE.find(body)?.groupValues?.get(1) ?: run {
+            println("PrivatEmail: Gmail confirmation but no code found in body")
             return false
         }
+        val suffix = extractAliasSuffix(msg) ?: run {
+            println("PrivatEmail: Gmail confirmation but no recognisable alias suffix in headers")
+            return false
+        }
+        val account = bankAccountRepository.findByTypeAndAccountId(BankType.PRIVATBANK, suffix) ?: run {
+            println("PrivatEmail: Gmail confirmation for unknown suffix='$suffix'; ignoring")
+            return false
+        }
+        val user = householdRepository.findUserById(account.userId) ?: return false
         try {
-            restClient.get().uri(url).retrieve().body<String>()
-            println("PrivatEmail: Gmail forwarding verified via $url")
+            categorizationBot.notifyChat(
+                user.chatId,
+                "Gmail прислал код для подтверждения forwarding-адреса:\n\n`$code`\n\n" +
+                    "Скопируй и вставь в Gmail → Settings → Forwarding and POP/IMAP → рядом с " +
+                    "адресом нажми «Verify» → введи код. После этого форвардинг активируется.",
+            )
+            println("PrivatEmail: relayed Gmail forwarding code to chat=${user.chatId} (suffix=$suffix)")
         } catch (e: Exception) {
-            println("PrivatEmail: Gmail forwarding confirmation GET failed: ${e.message}")
+            println("PrivatEmail: failed to relay Gmail forwarding code to chat=${user.chatId}: ${e.message}")
             return false
         }
         return true
@@ -199,6 +216,8 @@ class PrivatEmailIngestor(
     companion object {
         private const val PRIVAT_SENDER = "info@pb.ua"
         private const val GMAIL_FORWARDING_SENDER = "forwarding-noreply@google.com"
-        private val GMAIL_CONFIRMATION_URL = Regex("""https://mail-settings\.google\.com/mail/vf-[\w%-]+""")
+        // Gmail confirmation emails contain a line like "Confirmation code: 12345678" — the
+        // 8-digit code that pairs with the verification URL.
+        private val GMAIL_CONFIRMATION_CODE = Regex("""[Cc]onfirmation code:\s*(\d{6,12})""")
     }
 }
