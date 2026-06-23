@@ -26,4 +26,11 @@ class AddBankAccountUseCase(
                 clientId = clientId,
             ),
         )
+
+    // Privat onboarding via email-forwarding is per-user (not per-card): one alias suffix
+    // catches all of the user's Privat cards. Looking up the existing row lets the bot show the
+    // same suffix again if the user re-runs «Привязать карту → PrivatBank» (lost the message,
+    // wants to re-read setup instructions).
+    fun findFirstPrivatForUser(user: BotUser): BankAccount? =
+        bankAccountRepository.findAllByUser(user.id).firstOrNull { it.bankType == BankType.PRIVATBANK }
 }

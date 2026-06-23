@@ -54,6 +54,9 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-data-jpa")
     implementation("com.vladmihalcea:hibernate-types-60:2.21.1") // для jsonb
 
+    // IMAP for PrivatBank email-notification ingestion
+    implementation("org.eclipse.angus:angus-mail:2.0.3")
+
     // Google authentication
     implementation("com.google.api-client:google-api-client:2.6.0")
     implementation("com.google.apis:google-api-services-sheets:v4-rev20250106-2.0.0")

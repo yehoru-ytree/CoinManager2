@@ -18,6 +18,9 @@ class BankAccountRepository(
     fun findAllByUser(userId: UUID): List<BankAccount> =
         jpa.findAllByUserId(userId).map { it.toDomain() }
 
+    fun findByTypeAndAccountId(bankType: BankType, accountId: String): BankAccount? =
+        jpa.findByBankTypeAndAccountId(bankType.name, accountId)?.toDomain()
+
     private fun BankAccount.toEntity() = BankAccountJpaEntity(
         id = id,
         userId = userId,

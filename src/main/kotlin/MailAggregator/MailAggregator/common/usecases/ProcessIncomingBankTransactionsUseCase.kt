@@ -58,9 +58,18 @@ class ProcessIncomingBankTransactionsUseCase(
         val household = householdRepository.findHousehold(user.householdId) ?: return
 
         val transactions = api.getStatements(account, household.id, from, to)
-            .filter { it.amount < 0 } // TODO income flows in future
+        processTransactionsForHousehold(household, transactions)
+    }
 
-        val newTransactions = handleNotProcessedTransactionsUseCase(transactions)
+    /**
+     * Shared pipeline: dedup → categorise → merge into sheet → Telegram log → mark processed.
+     * Used by the polling job (one batch per linked bank account) AND by the email-driven
+     * Privat ingestor (one tx at a time as emails arrive).
+     */
+    fun processTransactionsForHousehold(household: Household, transactions: List<Transaction>) {
+        val expenseTransactions = transactions.filter { it.amount < 0 } // TODO income flows in future
+
+        val newTransactions = handleNotProcessedTransactionsUseCase(expenseTransactions)
         if (newTransactions.isEmpty()) return
 
         val otherCategoryId = categoryRepository.findOther(household.id).id
@@ -96,7 +105,7 @@ class ProcessIncomingBankTransactionsUseCase(
         }
 
         handleOtherExpensesUseCase(
-            transactions.filter { it.id in uncategorizedExpenses },
+            expenseTransactions.filter { it.id in uncategorizedExpenses },
         )
     }
 
