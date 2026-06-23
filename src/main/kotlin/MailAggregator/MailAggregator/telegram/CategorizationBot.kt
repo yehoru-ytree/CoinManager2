@@ -99,6 +99,12 @@ class CategorizationBot(
         })
     }
 
+    // Plain DM to a single chat — used by the email ingestor to relay Gmail forwarding
+    // verification codes to the user without going through the keyword/category pipeline.
+    fun notifyChat(chatId: Long, text: String) {
+        bot.execute(SendMessage(chatId, text))
+    }
+
     fun sendTx(transaction: CategorizationRequest) {
         val text = t(
             "tx.prompt",

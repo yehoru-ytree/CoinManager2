@@ -4,6 +4,7 @@ import MailAggregator.MailAggregator.bank.BankType
 import MailAggregator.MailAggregator.bank.repository.BankAccountRepository
 import MailAggregator.MailAggregator.household.repository.HouseholdRepository
 import MailAggregator.MailAggregator.spreadsheet.usecases.ProcessIncomingBankTransactionsUseCase
+import MailAggregator.MailAggregator.telegram.CategorizationBot
 import jakarta.mail.Folder
 import jakarta.mail.Message
 import jakarta.mail.Multipart
@@ -20,8 +21,6 @@ import jakarta.mail.search.SearchTerm
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.scheduling.annotation.Scheduled
 import org.springframework.stereotype.Component
-import org.springframework.web.client.RestClient
-import org.springframework.web.client.body
 import java.io.ByteArrayOutputStream
 import java.util.Properties
 
@@ -46,12 +45,16 @@ class PrivatEmailIngestor(
     private val bankAccountRepository: BankAccountRepository,
     private val householdRepository: HouseholdRepository,
     private val processIncomingBankTransactionsUseCase: ProcessIncomingBankTransactionsUseCase,
+    private val categorizationBot: CategorizationBot,
 ) {
-    private val restClient: RestClient = RestClient.create()
 
     @Scheduled(fixedDelayString = "\${email.imap.poll-interval}")
     fun ingest() {
-        if (username.isBlank() || password.isBlank()) return
+        if (username.isBlank() || password.isBlank()) {
+            println("PrivatEmailIngestor: poll skipped — username/password blank")
+            return
+        }
+        println("PrivatEmailIngestor: poll starting (host=$host, user=$username)")
         try {
             openStore().use { store ->
                 val folder = store.getFolder(folderName)
@@ -63,6 +66,22 @@ class PrivatEmailIngestor(
                         FromStringTerm(GMAIL_FORWARDING_SENDER),
                     )
                     val messages = folder.search(AndTerm(unseen, fromInteresting))
+                    if (messages.isNotEmpty()) {
+                        // Force IMAP to pre-fetch envelope, flags, AND full headers in one round
+                        // trip. By default `msg.getAllHeaders()` only returns envelope-level
+                        // headers — X-Forwarded-To and friends arrive empty, which is exactly
+                        // where Gmail-filter forwards stash the per-user alias suffix.
+                        val profile = jakarta.mail.FetchProfile().apply {
+                            add(jakarta.mail.FetchProfile.Item.ENVELOPE)
+                            add(jakarta.mail.FetchProfile.Item.FLAGS)
+                            add(jakarta.mail.FetchProfile.Item.CONTENT_INFO)
+                            add("X-Forwarded-To")
+                            add("X-Forwarded-For")
+                            add("Delivered-To")
+                            add("Return-Path")
+                        }
+                        folder.fetch(messages, profile)
+                    }
                     for (msg in messages) {
                         val processed = runCatching { handle(msg) }
                             .onFailure { println("Email ingest failed (subject='${msg.subject}'): ${it.message}") }
@@ -89,26 +108,46 @@ class PrivatEmailIngestor(
     }
 
     private fun handlePrivatTx(msg: Message): Boolean {
-        val suffix = extractAliasSuffix(msg) ?: run {
-            println("PrivatEmail: no recognisable alias suffix in To/Delivered-To; skipping")
-            return false
-        }
-        val account = bankAccountRepository.findByTypeAndAccountId(BankType.PRIVATBANK, suffix) ?: run {
-            println("PrivatEmail: no PRIVATBANK bank_account for suffix='$suffix'; skipping")
-            return false
-        }
+        // Routing the message to a user: try the alias suffix first (works for cases where the
+        // To: literally contains coinmanager.ingest+<suffix>@gmail.com — e.g. when Privat is
+        // configured to send notifications directly to our alias). Otherwise fall back to the
+        // forwarder Gmail address parsed from the Return-Path's CAF wrapper — that's what
+        // Gmail-filter forwards always carry, even though they strip the +<suffix> from
+        // Delivered-To.
+        val suffix = extractAliasSuffix(msg)
+        val forwarder = extractForwarderFromReturnPath(msg)
+        val account = suffix
+            ?.let { bankAccountRepository.findByTypeAndAccountId(BankType.PRIVATBANK, it) }
+            ?: forwarder?.let { bankAccountRepository.findByTypeAndToken(BankType.PRIVATBANK, it) }
+            ?: run {
+                println("PrivatEmail: no PRIVATBANK match. suffix='$suffix', forwarder='$forwarder'; skipping")
+                return false
+            }
         val user = householdRepository.findUserById(account.userId) ?: return false
         val household = householdRepository.findHousehold(user.householdId) ?: return false
 
         val body = extractTextBody(msg)
         val messageId = (msg.getHeader("Message-ID")?.firstOrNull() ?: "").trim('<', '>', ' ')
-        val txId = if (messageId.isNotBlank()) "privat-email-$messageId" else "privat-email-${msg.subject}-${msg.sentDate?.time}"
+        // Telegram callback_data caps at 64 bytes, and tx ids end up in "c|<id>|<row>" payloads
+        // for the OTHER-flow inline keyboard. Hash the Message-ID instead of pasting it raw —
+        // SHA-1 truncated to 12 hex chars is still globally unique enough for dedup against the
+        // existing transactions table.
+        val idSource = messageId.ifBlank { "${msg.subject ?: ""}-${msg.sentDate?.time ?: System.currentTimeMillis()}" }
+        val hash = java.security.MessageDigest.getInstance("SHA-1")
+            .digest(idSource.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+            .take(12)
+        val txId = "privat-email-$hash"
         val txTimeSec = (msg.sentDate ?: msg.receivedDate)?.time?.let { it / 1000 } ?: (System.currentTimeMillis() / 1000)
 
         val tx = PrivatEmailParser.parse(body, household.id, txTimeSec, txId) ?: run {
-            // Self-transfer or incoming: parser returned null. Still mark as seen — it's a known
-            // pattern we explicitly chose to skip, no point re-reading next poll.
-            return true
+            // Parser returns null for known-skip cases (self-transfer, incoming) AND for anything
+            // it didn't recognise. We can't distinguish the two without colour-coding, so log the
+            // body and DON'T mark seen — easier to spot a regex gap than to dig out the email
+            // from Gmail later. Real self-transfers will keep re-logging until the parser is
+            // taught to distinguish them as a positive skip.
+            println("PrivatEmail: unparsed transaction email. Subject='${msg.subject}', body='${body.take(1000)}'")
+            return false
         }
 
         processIncomingBankTransactionsUseCase.processTransactionsForHousehold(household, listOf(tx))
@@ -116,30 +155,82 @@ class PrivatEmailIngestor(
     }
 
     private fun handleGmailForwardingConfirmation(msg: Message): Boolean {
+        // Anonymous GET on the verification URL is blocked by Google (Temporary Error 2477) and
+        // the localised body (Russian/Ukrainian) doesn't include a 'Confirmation code:' line at
+        // all — only the URL. So forward the URL itself to the user via Telegram; clicking it
+        // in their own browser (where they're logged in to Gmail) completes verification.
         val body = extractTextBody(msg)
-        val url = GMAIL_CONFIRMATION_URL.find(body)?.value ?: run {
-            println("PrivatEmail: Gmail confirmation but no verification URL found in body")
+        val url = GMAIL_APPROVE_URL.find(body)?.value ?: run {
+            println("PrivatEmail: Gmail confirmation but no approve URL found. Body excerpt: ${body.take(500).replace(Regex("\\s+"), " ")}")
             return false
         }
+        val suffix = extractAliasSuffix(msg) ?: run {
+            println("PrivatEmail: Gmail confirmation but no recognisable alias suffix in headers")
+            return false
+        }
+        val account = bankAccountRepository.findByTypeAndAccountId(BankType.PRIVATBANK, suffix) ?: run {
+            println("PrivatEmail: Gmail confirmation for unknown suffix='$suffix'; ignoring")
+            return false
+        }
+        val user = householdRepository.findUserById(account.userId) ?: return false
+
+        // Auto-link forwarder Gmail to this account by parsing the confirmation body. Gmail's
+        // filter forwards lose the +<suffix> from Delivered-To (plus-addressing collapse on
+        // Gmail-to-Gmail SMTP), so transaction emails get routed by forwarder address instead.
+        val forwarder = extractForwarderFromConfirmationBody(body)
+        if (forwarder != null && account.token != forwarder) {
+            bankAccountRepository.update(account.copy(token = forwarder))
+            println("PrivatEmail: linked forwarder='$forwarder' to suffix='$suffix' for chat=${user.chatId}")
+        }
+
         try {
-            restClient.get().uri(url).retrieve().body<String>()
-            println("PrivatEmail: Gmail forwarding verified via $url")
+            categorizationBot.notifyChat(
+                user.chatId,
+                "Gmail прислал ссылку для подтверждения forwarding-адреса. " +
+                    "Открой её в браузере, где ты залогинен в свой Gmail (форвардинг включится автоматически):\n\n" +
+                    url,
+            )
+            println("PrivatEmail: relayed Gmail forwarding URL to chat=${user.chatId} (suffix=$suffix)")
         } catch (e: Exception) {
-            println("PrivatEmail: Gmail forwarding confirmation GET failed: ${e.message}")
+            println("PrivatEmail: failed to relay Gmail forwarding URL to chat=${user.chatId}: ${e.message}")
             return false
         }
         return true
     }
 
-    private fun extractAliasSuffix(msg: Message): String? {
-        val recipients = sequenceOf("To", "Delivered-To", "X-Forwarded-To")
-            .flatMap { (msg.getHeader(it) ?: emptyArray()).asSequence() }
-        val pattern = Regex("""${Regex.escape(ingestLocalPart())}\+([^@]+)@""")
-        for (header in recipients) {
-            val decoded = runCatching { MimeUtility.decodeText(header) }.getOrDefault(header)
-            pattern.find(decoded)?.let { return it.groupValues[1] }
+    // Confirmation body (Russian Gmail): "Мы получили запрос на автоматическую пересылку писем
+    // с адреса egorusdnepr@gmail.com на нашу почту ...". English: "...request to forward mail
+    // from egorusdnepr@gmail.com to your address...". Match either.
+    private fun extractForwarderFromConfirmationBody(body: String): String? =
+        FORWARDER_IN_BODY.find(body)?.groupValues?.get(1)?.let(::canonicaliseGmail)
+
+    // Return-Path on Gmail-filter forwarded mail looks like:
+    //   <egorusdnepr+caf_=coinmanager.ingest=gmail.com@gmail.com>
+    // The forwarder's base address is the local-part BEFORE `+caf_=`, at gmail.com.
+    private fun extractForwarderFromReturnPath(msg: Message): String? {
+        val mime = msg as? jakarta.mail.internet.MimeMessage ?: return null
+        val returnPath = mime.allHeaderLines.toList().firstOrNull { it.startsWith("Return-Path:", ignoreCase = true) } ?: return null
+        return RETURN_PATH_FORWARDER.find(returnPath)?.let { canonicaliseGmail("${it.groupValues[1]}@gmail.com") }
+    }
+
+    private fun canonicaliseGmail(addr: String): String {
+        val lower = addr.lowercase()
+        val (local, domain) = lower.split('@', limit = 2).let {
+            if (it.size != 2) return lower else it[0] to it[1]
         }
-        return null
+        return "${local.substringBefore('+')}@$domain"
+    }
+
+    private fun extractAliasSuffix(msg: Message): String? {
+        val pattern = Regex("""${Regex.escape(ingestLocalPart())}\+([^@]+)@""", RegexOption.IGNORE_CASE)
+        // getAllHeaderLines forces IMAP to FETCH BODY[HEADER] — pulls every header line on the
+        // message, not just the envelope subset that allHeaders/getHeader return. Gmail's
+        // filter forwards stash the per-user alias suffix in X-Forwarded-To which is NOT in
+        // the envelope subset (Delivered-To gets normalised to the base address).
+        val mime = msg as? jakarta.mail.internet.MimeMessage ?: return null
+        val headerBlob = mime.allHeaderLines.toList().joinToString("\n")
+        val decoded = runCatching { MimeUtility.decodeText(headerBlob) }.getOrDefault(headerBlob)
+        return pattern.find(decoded)?.groupValues?.get(1)
     }
 
     private fun ingestLocalPart(): String = username.substringBefore('@')
@@ -199,6 +290,13 @@ class PrivatEmailIngestor(
     companion object {
         private const val PRIVAT_SENDER = "info@pb.ua"
         private const val GMAIL_FORWARDING_SENDER = "forwarding-noreply@google.com"
-        private val GMAIL_CONFIRMATION_URL = Regex("""https://mail-settings\.google\.com/mail/vf-[\w%-]+""")
+        // Gmail's "approve forwarding" URL — `vf-...` is the verify prefix. The matching `uf-...`
+        // is the cancel/unverify link which we deliberately do NOT forward.
+        private val GMAIL_APPROVE_URL = Regex("""https://(?:mail-settings|mail)\.google\.com/mail/vf-[\w%-]+""")
+        private val FORWARDER_IN_BODY = Regex(
+            """(?:с адреса|from\s+address|from)\s+(\S+@\S+\.\S+)""",
+            RegexOption.IGNORE_CASE,
+        )
+        private val RETURN_PATH_FORWARDER = Regex("""<([\w.]+)\+caf_=[^>]+>""", RegexOption.IGNORE_CASE)
     }
 }
