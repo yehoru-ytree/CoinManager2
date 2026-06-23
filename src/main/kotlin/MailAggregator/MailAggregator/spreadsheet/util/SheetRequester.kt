@@ -5,6 +5,7 @@ import MailAggregator.MailAggregator.spreadsheet.GoogleApiRequester
 import com.google.api.services.sheets.v4.model.AddSheetRequest
 import com.google.api.services.sheets.v4.model.BatchUpdateSpreadsheetRequest
 import com.google.api.services.sheets.v4.model.ClearValuesRequest
+import com.google.api.services.sheets.v4.model.CopySheetToAnotherSpreadsheetRequest
 import com.google.api.services.sheets.v4.model.DuplicateSheetRequest
 import com.google.api.services.sheets.v4.model.GridProperties
 import com.google.api.services.sheets.v4.model.Request
@@ -165,6 +166,57 @@ class SheetRequester(
         GoogleApiRequester.sendRequest {
             sheets()
                 .batchUpdate(spreadsheetId, batchUpdateSpreadsheetRequest)
+                .execute()
+        }
+    }
+
+    /**
+     * Copies the tab named [sourceSheetTitle] from [sourceSpreadsheetId] into [destinationSpreadsheetId]
+     * and renames the copy to [sourceSheetTitle] (Sheets defaults to "Copy of …"). Idempotent: if a
+     * tab with that title already exists in the destination, the copy is skipped — the bot has
+     * already created it for this household, or the user pre-populated their sheet themselves.
+     *
+     * Requires the service account to have read access to [sourceSpreadsheetId] (master template
+     * is shared once at setup) and write access to [destinationSpreadsheetId] (each user shares
+     * their own sheet as part of onboarding).
+     */
+    fun copySheetToSpreadsheet(
+        sourceSpreadsheetId: String,
+        sourceSheetTitle: String,
+        destinationSpreadsheetId: String,
+    ) {
+        if (sheetExists(destinationSpreadsheetId, sourceSheetTitle)) return
+
+        val sourceSheetId = getSheetId(sourceSpreadsheetId, sourceSheetTitle)
+
+        val copiedProperties = GoogleApiRequester.sendRequest {
+            sheets()
+                .sheets()
+                .copyTo(
+                    sourceSpreadsheetId,
+                    sourceSheetId,
+                    CopySheetToAnotherSpreadsheetRequest().setDestinationSpreadsheetId(destinationSpreadsheetId),
+                )
+                .execute()
+        }
+
+        val renameRequest = BatchUpdateSpreadsheetRequest().setRequests(
+            listOf(
+                Request().setUpdateSheetProperties(
+                    UpdateSheetPropertiesRequest()
+                        .setProperties(
+                            SheetProperties()
+                                .setSheetId(copiedProperties.sheetId)
+                                .setTitle(sourceSheetTitle),
+                        )
+                        .setFields("title"),
+                ),
+            ),
+        )
+
+        GoogleApiRequester.sendRequest {
+            sheets()
+                .batchUpdate(destinationSpreadsheetId, renameRequest)
                 .execute()
         }
     }

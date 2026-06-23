@@ -19,6 +19,8 @@ import MailAggregator.MailAggregator.bank.Transaction
 import MailAggregator.MailAggregator.bank.TransactionStatus
 import MailAggregator.MailAggregator.bank.repository.TransactionRepository
 import MailAggregator.MailAggregator.bank.repository.TransactionStatusRepository
+import MailAggregator.MailAggregator.monobank.api.MonoApiAccount
+import MailAggregator.MailAggregator.monobank.api.MonobankApi
 import MailAggregator.MailAggregator.spreadsheet.Authentication
 import MailAggregator.MailAggregator.telegram.model.CategorizationRequest
 import MailAggregator.MailAggregator.telegram.repository.TelegramLogMessageRepository
@@ -57,6 +59,7 @@ class CategorizationBot(
     private val addCashTransactionUseCase: AddCashTransactionUseCase,
     private val inviteTokenRepository: InviteTokenRepository,
     private val authentication: Authentication,
+    private val monobankApi: MonobankApi,
     private val messageSource: MessageSource,
     private val zoneId: ZoneId = TIME_ZONE,
     private val onDecision: (txId: String, decision: Decision) -> Unit,
@@ -294,6 +297,7 @@ class CategorizationBot(
             'c' -> handleCategorizationCallback(cq, chatId, user, data)
             'k' -> handleSaveKeywordCallback(cq, chatId, user, data)
             'b' -> handleBankPickerCallback(cq, chatId, data)
+            'm' -> handleMonoAccountCallback(cq, chatId, user, data)
             else -> bot.execute(AnswerCallbackQuery(cq.id()).text(t("callback.badCallback")))
         }
     }
@@ -319,7 +323,10 @@ class CategorizationBot(
             reply(msg, t("flow.alreadyInHousehold"))
             return
         }
-        val promptId = reply(msg, t("createHousehold.start", cancelTrigger)) ?: return
+        val promptId = reply(
+            msg,
+            t("createHousehold.start", cancelTrigger, authentication.serviceAccountEmail),
+        ) ?: return
         createHouseholdStates[chatId] = CreateHouseholdState.AwaitingSheetId(promptId)
     }
 
@@ -337,17 +344,9 @@ class CategorizationBot(
                     createHouseholdStates[chatId] = CreateHouseholdState.AwaitingSheetId(promptId)
                     return
                 }
-                val promptId = reply(msg, t("createHousehold.askTemplate")) ?: return
-                createHouseholdStates[chatId] = CreateHouseholdState.AwaitingTemplateTitle(promptId, text)
-            }
-            is CreateHouseholdState.AwaitingTemplateTitle -> {
-                if (text.isEmpty()) {
-                    val promptId = reply(msg, t("createHousehold.emptyTemplate")) ?: return
-                    createHouseholdStates[chatId] = CreateHouseholdState.AwaitingTemplateTitle(promptId, state.sheetId)
-                    return
-                }
+                val sheetId = extractSheetId(text)
                 val result = try {
-                    createHouseholdUseCase.create(chatId, state.sheetId, text)
+                    createHouseholdUseCase.create(chatId, sheetId)
                 } catch (e: Exception) {
                     println("Failed to create household for chat $chatId: ${e.message}")
                     createHouseholdStates.remove(chatId)
@@ -462,17 +461,42 @@ class CategorizationBot(
                     addCardStates[chatId] = AddCardState.Mono.AwaitingToken(promptId)
                     return
                 }
-                val promptId = reply(msg, t("addCard.mono.askAccountId")) ?: return
-                addCardStates[chatId] = AddCardState.Mono.AwaitingAccountId(promptId, text)
-            }
-            is AddCardState.Mono.AwaitingAccountId -> {
-                if (text.isEmpty()) {
-                    val promptId = reply(msg, t("addCard.mono.emptyAccount")) ?: return
-                    addCardStates[chatId] = AddCardState.Mono.AwaitingAccountId(promptId, state.token)
+                val accounts = try {
+                    monobankApi.getClientInfo(text).accounts
+                } catch (e: Exception) {
+                    println("Mono getClientInfo failed for chat $chatId: ${e.message}")
+                    addCardStates.remove(chatId)
+                    reply(msg, t("addCard.mono.tokenFailed", e.message ?: ""))
                     return
                 }
-                persistBankAccount(chatId, msg, user, BankType.MONOBANK, token = state.token, accountId = text, clientId = null)
+                when (accounts.size) {
+                    0 -> {
+                        addCardStates.remove(chatId)
+                        reply(msg, t("addCard.mono.noAccounts"))
+                    }
+                    1 -> persistBankAccount(
+                        chatId, msg, user, BankType.MONOBANK,
+                        token = text, accountId = accounts[0].id, clientId = null,
+                    )
+                    else -> {
+                        val keyboard = InlineKeyboardMarkup(
+                            *accounts.map { acc ->
+                                arrayOf(InlineKeyboardButton(formatMonoAccountLabel(acc)).callbackData("m|${acc.id}"))
+                            }.toTypedArray(),
+                        )
+                        val response = bot.execute(
+                            SendMessage(msg.chat().id(), t("addCard.mono.askAccountChoice", accounts.size))
+                                .replyParameters(ReplyParameters(msg.messageId()))
+                                .replyMarkup(keyboard),
+                        ) ?: return
+                        val promptId = response.message()?.messageId() ?: return
+                        addCardStates[chatId] = AddCardState.Mono.AwaitingAccountChoice(
+                            promptId, text, accounts.map { it.id }.toSet(),
+                        )
+                    }
+                }
             }
+            is AddCardState.Mono.AwaitingAccountChoice -> return // tap, not text
         }
     }
 
@@ -520,6 +544,34 @@ class CategorizationBot(
                 )
             }
         }
+    }
+
+    private fun handleMonoAccountCallback(cq: CallbackQuery, chatId: Long, user: BotUser, data: String) {
+        val state = addCardStates[chatId] as? AddCardState.Mono.AwaitingAccountChoice
+        val pickerMsg = cq.message()
+        val accountId = data.substringAfter('|', missingDelimiterValue = "")
+        if (state == null || pickerMsg == null ||
+            pickerMsg.messageId() != state.lastPromptMessageId ||
+            accountId.isEmpty() || accountId !in state.knownAccountIds
+        ) {
+            bot.execute(AnswerCallbackQuery(cq.id()).text(t("callback.alreadyDone")))
+            return
+        }
+        bot.execute(EditMessageReplyMarkup(chatId, pickerMsg.messageId()))
+        bot.execute(AnswerCallbackQuery(cq.id()))
+        persistBankAccount(
+            chatId, pickerMsg, user, BankType.MONOBANK,
+            token = state.token, accountId = accountId, clientId = null,
+        )
+    }
+
+    // Inline-button label for a Mono account: "type · CCY · …last-4-of-IBAN" — fits in <40 chars
+    // and gives the user enough to pick the right card without having to memorise the UUID.
+    private fun formatMonoAccountLabel(account: MonoApiAccount): String {
+        val type = account.type?.takeIf { it.isNotBlank() } ?: "account"
+        val currency = currencyCode(account.currencyCode)
+        val ibanTail = account.iban?.takeLast(4)?.let { " · …$it" } ?: ""
+        return "$type · $currency$ibanTail"
     }
 
     private fun persistBankAccount(
@@ -975,10 +1027,6 @@ class CategorizationBot(
         abstract val lastPromptMessageId: Int
 
         data class AwaitingSheetId(override val lastPromptMessageId: Int) : CreateHouseholdState()
-        data class AwaitingTemplateTitle(
-            override val lastPromptMessageId: Int,
-            val sheetId: String,
-        ) : CreateHouseholdState()
     }
 
     private sealed class AddCardState {
@@ -988,9 +1036,10 @@ class CategorizationBot(
 
         sealed class Mono : AddCardState() {
             data class AwaitingToken(override val lastPromptMessageId: Int) : Mono()
-            data class AwaitingAccountId(
+            data class AwaitingAccountChoice(
                 override val lastPromptMessageId: Int,
                 val token: String,
+                val knownAccountIds: Set<String>,
             ) : Mono()
         }
 
@@ -1022,10 +1071,18 @@ class CategorizationBot(
         data object Ignore : Decision()
     }
 
+    // Accept either a full Google Sheets URL ("https://docs.google.com/spreadsheets/d/{ID}/edit…")
+    // or a bare ID. Falling back to the trimmed input keeps backward compatibility for users who
+    // already know the drill and paste only the ID.
+    private fun extractSheetId(input: String): String =
+        SHEETS_URL_PATTERN.find(input)?.groupValues?.get(1) ?: input.trim()
+
     companion object {
         private val DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
         private val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
         private val IBAN_PATTERN: Regex = Regex("^UA[0-9]{27}$")
+        private val SHEETS_URL_PATTERN: Regex =
+            Regex("""docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]+)""")
 
         private fun currencyCode(numericCode: Int): String = when (numericCode) {
             980 -> "UAH"

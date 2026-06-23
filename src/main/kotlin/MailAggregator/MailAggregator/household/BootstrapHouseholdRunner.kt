@@ -29,7 +29,7 @@ class BootstrapHouseholdRunner(
     private val jdbcTemplate: JdbcTemplate,
     @Value("\${telegram.owner-chat-id}") private val ownerChatId: String,
     @Value("\${google.sheet-id}") private val sheetId: String,
-    @Value("\${google.template-sheet-title}") private val templateSheetTitle: String,
+    @Value("\${google.template.sheet-title}") private val templateSheetTitle: String,
     @Value("\${monobank.token}") private val monobankToken: String,
     @Value("\${monobank.account-id}") private val monobankAccountId: String,
 ) : ApplicationRunner {

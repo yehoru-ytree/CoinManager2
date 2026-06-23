@@ -180,9 +180,15 @@ class Config(
     fun createHouseholdUseCase(
         householdRepository: HouseholdRepository,
         seedDefaultCategoriesUseCase: SeedDefaultCategoriesUseCase,
+        sheetRequester: SheetRequester,
+        @Value("\${google.template.spreadsheet-id}") templateSpreadsheetId: String,
+        @Value("\${google.template.sheet-title}") templateSheetTitle: String,
     ) = CreateHouseholdUseCase(
         householdRepository = householdRepository,
         seedDefaultCategoriesUseCase = seedDefaultCategoriesUseCase,
+        sheetRequester = sheetRequester,
+        templateSpreadsheetId = templateSpreadsheetId,
+        templateSheetTitle = templateSheetTitle,
     )
 
     @Bean
