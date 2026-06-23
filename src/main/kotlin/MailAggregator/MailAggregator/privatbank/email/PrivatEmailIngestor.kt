@@ -115,13 +115,13 @@ class PrivatEmailIngestor(
     }
 
     private fun handleGmailForwardingConfirmation(msg: Message): Boolean {
-        // Anonymous GET on the verification URL is blocked by Google ("Temporary Error 2477" —
-        // their anti-abuse refuses to auto-verify forwarding addresses without a logged-in
-        // session). Instead extract the confirmation code from the body and DM it to the user
-        // who set up the forwarding — they paste it into Gmail UI manually.
+        // Anonymous GET on the verification URL is blocked by Google (Temporary Error 2477) and
+        // the localised body (Russian/Ukrainian) doesn't include a 'Confirmation code:' line at
+        // all — only the URL. So forward the URL itself to the user via Telegram; clicking it
+        // in their own browser (where they're logged in to Gmail) completes verification.
         val body = extractTextBody(msg)
-        val code = GMAIL_CONFIRMATION_CODE.find(body)?.groupValues?.get(1) ?: run {
-            println("PrivatEmail: Gmail confirmation but no code found in body")
+        val url = GMAIL_APPROVE_URL.find(body)?.value ?: run {
+            println("PrivatEmail: Gmail confirmation but no approve URL found. Body excerpt: ${body.take(500).replace(Regex("\\s+"), " ")}")
             return false
         }
         val suffix = extractAliasSuffix(msg) ?: run {
@@ -136,13 +136,13 @@ class PrivatEmailIngestor(
         try {
             categorizationBot.notifyChat(
                 user.chatId,
-                "Gmail прислал код для подтверждения forwarding-адреса:\n\n`$code`\n\n" +
-                    "Скопируй и вставь в Gmail → Settings → Forwarding and POP/IMAP → рядом с " +
-                    "адресом нажми «Verify» → введи код. После этого форвардинг активируется.",
+                "Gmail прислал ссылку для подтверждения forwarding-адреса. " +
+                    "Открой её в браузере, где ты залогинен в свой Gmail (форвардинг включится автоматически):\n\n" +
+                    url,
             )
-            println("PrivatEmail: relayed Gmail forwarding code to chat=${user.chatId} (suffix=$suffix)")
+            println("PrivatEmail: relayed Gmail forwarding URL to chat=${user.chatId} (suffix=$suffix)")
         } catch (e: Exception) {
-            println("PrivatEmail: failed to relay Gmail forwarding code to chat=${user.chatId}: ${e.message}")
+            println("PrivatEmail: failed to relay Gmail forwarding URL to chat=${user.chatId}: ${e.message}")
             return false
         }
         return true
@@ -216,8 +216,8 @@ class PrivatEmailIngestor(
     companion object {
         private const val PRIVAT_SENDER = "info@pb.ua"
         private const val GMAIL_FORWARDING_SENDER = "forwarding-noreply@google.com"
-        // Gmail confirmation emails contain a line like "Confirmation code: 12345678" — the
-        // 8-digit code that pairs with the verification URL.
-        private val GMAIL_CONFIRMATION_CODE = Regex("""[Cc]onfirmation code:\s*(\d{6,12})""")
+        // Gmail's "approve forwarding" URL — `vf-...` is the verify prefix. The matching `uf-...`
+        // is the cancel/unverify link which we deliberately do NOT forward.
+        private val GMAIL_APPROVE_URL = Regex("""https://mail-settings\.google\.com/mail/vf-[\w%-]+""")
     }
 }
