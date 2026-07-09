@@ -21,6 +21,11 @@ class BankAccountRepository(
     fun findByTypeAndAccountId(bankType: BankType, accountId: String): BankAccount? =
         jpa.findByBankTypeAndAccountId(bankType.name, accountId)?.toDomain()
 
+    fun findByTypeAndToken(bankType: BankType, token: String): BankAccount? =
+        jpa.findByBankTypeAndToken(bankType.name, token)?.toDomain()
+
+    fun update(account: BankAccount): BankAccount = jpa.save(account.toEntity()).toDomain()
+
     private fun BankAccount.toEntity() = BankAccountJpaEntity(
         id = id,
         userId = userId,

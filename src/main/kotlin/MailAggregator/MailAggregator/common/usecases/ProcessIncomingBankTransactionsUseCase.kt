@@ -50,6 +50,10 @@ class ProcessIncomingBankTransactionsUseCase(
     }
 
     private fun processAccount(account: BankAccount, from: Instant, to: Instant) {
+        // PrivatBank has no pull-based API for физлица — Privat accounts get their transactions
+        // via PrivatEmailIngestor (push from Privat's email notifications). Skip silently so the
+        // polling job doesn't spam logs every cycle.
+        if (account.bankType == BankType.PRIVATBANK) return
         val api = bankApis[account.bankType] ?: run {
             println("No BankApi registered for ${account.bankType}; skipping account ${account.accountId}")
             return
