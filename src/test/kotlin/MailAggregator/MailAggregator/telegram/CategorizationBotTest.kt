@@ -23,9 +23,14 @@ import MailAggregator.MailAggregator.spreadsheet.Authentication
 import MailAggregator.MailAggregator.telegram.model.CategorizationRequest
 import MailAggregator.MailAggregator.telegram.repository.TelegramLogMessageRepository
 import MailAggregator.MailAggregator.telegram.repository.jpa.TelegramLogMessageJpaEntity
+import com.pengrad.telegrambot.model.Message
+import com.pengrad.telegrambot.model.Update
+import io.mockk.Runs
 import io.mockk.every
+import io.mockk.just
 import io.mockk.junit5.MockKExtension
 import io.mockk.mockk
+import io.mockk.slot
 import io.mockk.verify
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Nested
@@ -64,6 +69,7 @@ class CategorizationBotTest {
     private val zoneId: ZoneId = ZoneId.of("UTC")
 
     private lateinit var bot: CategorizationBot
+    private val onUpdateSlot = slot<(Update) -> Unit>()
 
     @BeforeEach
     fun setUp() {
@@ -71,6 +77,7 @@ class CategorizationBotTest {
         every { categoryRepository.findAll(any()) } returns listOf(
             category(UUID.randomUUID(), "Other").copy(isOther = true, sheetRow = 999),
         )
+        every { gateway.start(capture(onUpdateSlot)) } just Runs
         bot = CategorizationBot(
             gateway = gateway,
             categoryRepository = categoryRepository,
@@ -93,6 +100,12 @@ class CategorizationBotTest {
             zoneId = zoneId,
             onDecision = onDecision,
         )
+        bot.startLongPolling() // registers the onUpdate lambda with the gateway (captured into onUpdateSlot)
+    }
+
+    /** Deliver an Update to the bot via the captured long-polling callback. */
+    private fun feed(update: Update) {
+        onUpdateSlot.captured(update)
     }
 
     @Nested
@@ -236,6 +249,168 @@ class CategorizationBotTest {
         }
     }
 
+    @Nested
+    inner class OneShotCommands {
+
+        @Test
+        fun `slash-start sends greeting`() {
+            // Given
+            val chatId = 1001L
+            val update = textUpdate(chatId, "/start", replyTo = null)
+
+            // When
+            feed(update)
+
+            // Then
+            verify(exactly = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = null) }
+        }
+
+        @Test
+        fun `help trigger from an unregistered chat sends help text`() {
+            // Given: no user for this chat
+            val chatId = 2001L
+            every { householdRepository.findUserByChatId(chatId) } returns null
+            val update = textUpdate(chatId, "/help", messageId = 42)
+
+            // When
+            feed(update)
+
+            // Then: reply threaded under the incoming message
+            verify(exactly = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = 42) }
+        }
+
+        @Test
+        fun `help trigger from a registered chat also sends help text`() {
+            // Given: registered user
+            val chatId = 2002L
+            val user = botUser(chatId)
+            every { householdRepository.findUserByChatId(chatId) } returns user
+            every { householdRepository.findHousehold(user.householdId) } returns household(user.householdId)
+            val update = textUpdate(chatId, "help", messageId = 43)
+
+            // When
+            feed(update)
+
+            // Then
+            verify(exactly = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = 43) }
+        }
+
+        @Test
+        fun `unregistered chat sending unknown text is told to register`() {
+            // Given: no user
+            val chatId = 3001L
+            every { householdRepository.findUserByChatId(chatId) } returns null
+            val update = textUpdate(chatId, "some random message", messageId = 55)
+
+            // When
+            feed(update)
+
+            // Then: single reply, no join/create side-effects
+            verify(exactly = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = 55) }
+            verify(exactly = 0) { joinHouseholdUseCase.join(any(), any()) }
+        }
+
+        @Test
+        fun `registered chat sending unknown text gets the unknown-command reply`() {
+            // Given: registered user, no mid-flow state
+            val chatId = 3002L
+            val user = botUser(chatId)
+            every { householdRepository.findUserByChatId(chatId) } returns user
+            every { householdRepository.findHousehold(user.householdId) } returns household(user.householdId)
+            val update = textUpdate(chatId, "blah blah", messageId = 60)
+
+            // When
+            feed(update)
+
+            // Then: single reply threaded under the message; no follow-up outbound calls
+            verify(exactly = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = 60) }
+        }
+
+        @Test
+        fun `invite command asks the token repo for a fresh token and replies with it`() {
+            // Given: registered user, generate returns a specific token
+            val chatId = 4001L
+            val user = botUser(chatId)
+            every { householdRepository.findUserByChatId(chatId) } returns user
+            every { householdRepository.findHousehold(user.householdId) } returns household(user.householdId)
+            every { inviteTokenRepository.create(user.householdId) } returns "tok-abc-123"
+            val update = textUpdate(chatId, "Пригласить", messageId = 70)
+
+            // When
+            feed(update)
+
+            // Then: token created for this household, reply sent under the trigger message
+            verify(exactly = 1) { inviteTokenRepository.create(user.householdId) }
+            verify(exactly = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = 70) }
+        }
+
+        @Test
+        fun `join with an empty token replies with usage instead of calling the use case`() {
+            // Given: chat with no user; the "Присоединиться" trigger alone (no token)
+            val chatId = 5001L
+            every { householdRepository.findUserByChatId(chatId) } returns null
+            val update = textUpdate(chatId, "Присоединиться", messageId = 80)
+
+            // When
+            feed(update)
+
+            // Then: usage reply, join use case not invoked
+            verify(exactly = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = 80) }
+            verify(exactly = 0) { joinHouseholdUseCase.join(any(), any()) }
+        }
+
+        @Test
+        fun `join with a valid token delegates to the use case (Joined result)`() {
+            // Given: fresh chat, join returns Joined
+            val chatId = 5002L
+            val householdId = UUID.randomUUID()
+            val joinedUser = botUser(chatId, householdId)
+            every { householdRepository.findUserByChatId(chatId) } returns null
+            every { joinHouseholdUseCase.join(chatId, "tok-xyz") } returns
+                JoinHouseholdUseCase.Result.Joined(household(householdId), joinedUser)
+            val update = textUpdate(chatId, "Присоединиться tok-xyz", messageId = 81)
+
+            // When
+            feed(update)
+
+            // Then
+            verify(exactly = 1) { joinHouseholdUseCase.join(chatId, "tok-xyz") }
+            verify(exactly = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = 81) }
+        }
+
+        @Test
+        fun `join with an invalid token replies with the invalidToken message`() {
+            // Given
+            val chatId = 5003L
+            every { householdRepository.findUserByChatId(chatId) } returns null
+            every { joinHouseholdUseCase.join(chatId, "bad") } returns JoinHouseholdUseCase.Result.InvalidToken
+            val update = textUpdate(chatId, "Присоединиться bad", messageId = 82)
+
+            // When
+            feed(update)
+
+            // Then
+            verify(exactly = 1) { joinHouseholdUseCase.join(chatId, "bad") }
+            verify(exactly = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = 82) }
+        }
+
+        @Test
+        fun `join when already in a household replies with alreadyJoined`() {
+            // Given
+            val chatId = 5004L
+            every { householdRepository.findUserByChatId(chatId) } returns null
+            every { joinHouseholdUseCase.join(chatId, "tok-2") } returns JoinHouseholdUseCase.Result.AlreadyInHousehold
+            val update = textUpdate(chatId, "Присоединиться tok-2", messageId = 83)
+
+            // When
+            feed(update)
+
+            // Then
+            verify(exactly = 1) { joinHouseholdUseCase.join(chatId, "tok-2") }
+            verify(exactly = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = 83) }
+        }
+    }
+
     // ── fixtures ──
 
     private fun request(
@@ -291,4 +466,44 @@ class CategorizationBotTest {
             transactionId = transactionId,
             comment = null,
         )
+
+    private fun botUser(chatId: Long, householdId: UUID = UUID.randomUUID()) = BotUser(
+        id = UUID.randomUUID(),
+        chatId = chatId,
+        name = "Test user",
+        householdId = householdId,
+    )
+
+    private fun household(id: UUID) = Household(
+        id = id,
+        name = "Test household",
+        sheetId = "sheet-$id",
+        templateSheetTitle = "Template",
+    )
+
+    /**
+     * Build a fake [Update] carrying a text [Message] with the given chat, text, and reply-to.
+     * `replyTo` is either null (top-level message) or another [Message] fake — use [botReplyPrompt]
+     * to make one that mimics a prompt the bot itself sent (`from().isBot == true`).
+     */
+    private fun textUpdate(
+        chatId: Long,
+        text: String,
+        messageId: Int = 1,
+        replyTo: Message? = null,
+    ): Update {
+        val message = mockk<Message>(relaxed = true).apply {
+            every { chat().id() } returns chatId
+            every { text() } returns text
+            every { messageId() } returns messageId
+            every { replyToMessage() } returns replyTo
+            every { from() } returns mockk(relaxed = true) {
+                every { isBot } returns false
+            }
+        }
+        return mockk<Update>(relaxed = true).apply {
+            every { message() } returns message
+            every { callbackQuery() } returns null
+        }
+    }
 }
