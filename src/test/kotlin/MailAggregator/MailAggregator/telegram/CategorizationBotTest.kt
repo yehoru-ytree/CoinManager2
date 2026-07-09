@@ -411,6 +411,209 @@ class CategorizationBotTest {
         }
     }
 
+    private enum class AddCategoryStep { AwaitingName, AwaitingDisplayName, AwaitingPriority, AwaitingKeywords }
+
+    @Nested
+    inner class AddCategoryWizard {
+
+        /**
+         * Drive the wizard up to the given step by feeding valid inputs, so each test only asserts the
+         * step it cares about. Returns the promptId of the current bot prompt (i.e. the id the *next*
+         * user reply must set as its replyTo).
+         *
+         * Each bot outgoing message returns `promptSeq++` as its id; that same id is threaded back in
+         * subsequent updates via [botReplyPrompt] to match the router's `replyTo.messageId() == state.lastPromptMessageId`
+         * requirement.
+         */
+        private fun driveThrough(step: AddCategoryStep, chatId: Long, household: Household): Int {
+            var promptId = 100
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } answers { (promptId++).toLong() }
+            // trigger word starts the wizard
+            feed(textUpdate(chatId, "Добавить категорию", messageId = 1))
+            if (step == AddCategoryStep.AwaitingName) return promptId - 1
+            // AwaitingName -> AwaitingDisplayName
+            every { categoryRepository.findByName(household.id, "COFFEE") } returns null
+            feed(textUpdate(chatId, "COFFEE", messageId = 2, replyTo = botReplyPrompt(promptId - 1)))
+            if (step == AddCategoryStep.AwaitingDisplayName) return promptId - 1
+            // AwaitingDisplayName -> AwaitingPriority
+            feed(textUpdate(chatId, "Coffee shops", messageId = 3, replyTo = botReplyPrompt(promptId - 1)))
+            if (step == AddCategoryStep.AwaitingPriority) return promptId - 1
+            // AwaitingPriority -> AwaitingKeywords
+            feed(textUpdate(chatId, "50", messageId = 4, replyTo = botReplyPrompt(promptId - 1)))
+            return promptId - 1
+        }
+
+        @Test
+        fun `trigger starts the wizard and asks for the name`() {
+            val chatId = 6001L
+            registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returns 100L
+
+            feed(textUpdate(chatId, "Добавить категорию", messageId = 1))
+
+            // Reply is threaded under the trigger message; no wizard completion yet.
+            verify(exactly = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = 1) }
+            verify(exactly = 0) { addCategoryUseCase.add(any(), any(), any(), any(), any()) }
+        }
+
+        @Test
+        fun `name that fails the pattern re-prompts and keeps the wizard in AwaitingName`() {
+            val chatId = 6002L
+            val (_, household) = registerUser(chatId)
+            val promptId = driveThrough(AddCategoryStep.AwaitingName, chatId, household)
+
+            // "coffee" lower-case fails validation.namePattern = [A-Z_]+
+            feed(textUpdate(chatId, "coffee", messageId = 10, replyTo = botReplyPrompt(promptId)))
+
+            // No lookup, no downstream call — just a re-prompt.
+            verify(exactly = 0) { categoryRepository.findByName(any(), any()) }
+            verify(exactly = 0) { addCategoryUseCase.add(any(), any(), any(), any(), any()) }
+            // Two outbound sends so far: the initial ask + the bad-name re-prompt.
+            verify(exactly = 2) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = any()) }
+        }
+
+        @Test
+        fun `name that already exists in the household re-prompts and keeps the wizard in AwaitingName`() {
+            val chatId = 6003L
+            val (_, household) = registerUser(chatId)
+            every { categoryRepository.findByName(household.id, "COFFEE") } returns
+                category(household.id, "Coffee shops").copy(name = "COFFEE")
+            val promptId = driveThrough(AddCategoryStep.AwaitingName, chatId, household)
+
+            feed(textUpdate(chatId, "COFFEE", messageId = 11, replyTo = botReplyPrompt(promptId)))
+
+            // Existing-name lookup happened, but no use case call and no state progression.
+            verify(exactly = 1) { categoryRepository.findByName(household.id, "COFFEE") }
+            verify(exactly = 0) { addCategoryUseCase.add(any(), any(), any(), any(), any()) }
+            verify(exactly = 2) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = any()) }
+        }
+
+        @Test
+        fun `empty displayName re-prompts and keeps the wizard in AwaitingDisplayName`() {
+            val chatId = 6004L
+            val (_, household) = registerUser(chatId)
+            val promptId = driveThrough(AddCategoryStep.AwaitingDisplayName, chatId, household)
+
+            feed(textUpdate(chatId, "", messageId = 20, replyTo = botReplyPrompt(promptId)))
+
+            verify(exactly = 0) { addCategoryUseCase.add(any(), any(), any(), any(), any()) }
+            // start + name-ok reply + displayName re-prompt = 3 sends
+            verify(exactly = 3) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = any()) }
+        }
+
+        @Test
+        fun `non-numeric priority re-prompts`() {
+            val chatId = 6005L
+            val (_, household) = registerUser(chatId)
+            val promptId = driveThrough(AddCategoryStep.AwaitingPriority, chatId, household)
+
+            feed(textUpdate(chatId, "abc", messageId = 30, replyTo = botReplyPrompt(promptId)))
+
+            verify(exactly = 0) { addCategoryUseCase.add(any(), any(), any(), any(), any()) }
+            // start + name-ok + displayName-ok + priority-bad = 4 sends
+            verify(exactly = 4) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = any()) }
+        }
+
+        @Test
+        fun `priority below range re-prompts`() {
+            val chatId = 6006L
+            val (_, household) = registerUser(chatId)
+            val promptId = driveThrough(AddCategoryStep.AwaitingPriority, chatId, household)
+
+            feed(textUpdate(chatId, "0", messageId = 31, replyTo = botReplyPrompt(promptId)))
+
+            verify(exactly = 0) { addCategoryUseCase.add(any(), any(), any(), any(), any()) }
+            verify(exactly = 4) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = any()) }
+        }
+
+        @Test
+        fun `priority above range re-prompts`() {
+            val chatId = 6007L
+            val (_, household) = registerUser(chatId)
+            val promptId = driveThrough(AddCategoryStep.AwaitingPriority, chatId, household)
+
+            feed(textUpdate(chatId, "101", messageId = 32, replyTo = botReplyPrompt(promptId)))
+
+            verify(exactly = 0) { addCategoryUseCase.add(any(), any(), any(), any(), any()) }
+            verify(exactly = 4) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = any()) }
+        }
+
+        @Test
+        fun `empty-keywords trigger completes the wizard with an empty keyword list`() {
+            val chatId = 6008L
+            val (_, household) = registerUser(chatId)
+            val promptId = driveThrough(AddCategoryStep.AwaitingKeywords, chatId, household)
+            every {
+                addCategoryUseCase.add(household, "COFFEE", "Coffee shops", 50, emptyList())
+            } returns category(household.id, "Coffee shops").copy(name = "COFFEE", priority = 50)
+
+            feed(textUpdate(chatId, "-", messageId = 40, replyTo = botReplyPrompt(promptId)))
+
+            verify(exactly = 1) {
+                addCategoryUseCase.add(
+                    household = household,
+                    name = "COFFEE",
+                    displayName = "Coffee shops",
+                    priority = 50,
+                    keywords = emptyList(),
+                )
+            }
+        }
+
+        @Test
+        fun `csv keyword list completes the wizard with trimmed non-empty items`() {
+            val chatId = 6009L
+            val (_, household) = registerUser(chatId)
+            val promptId = driveThrough(AddCategoryStep.AwaitingKeywords, chatId, household)
+            every {
+                addCategoryUseCase.add(household, "COFFEE", "Coffee shops", 50, listOf("coffee", "latte", "espresso"))
+            } returns category(household.id, "Coffee shops").copy(name = "COFFEE", priority = 50)
+
+            feed(textUpdate(chatId, "coffee, latte, espresso", messageId = 41, replyTo = botReplyPrompt(promptId)))
+
+            verify(exactly = 1) {
+                addCategoryUseCase.add(
+                    household = household,
+                    name = "COFFEE",
+                    displayName = "Coffee shops",
+                    priority = 50,
+                    keywords = listOf("coffee", "latte", "espresso"),
+                )
+            }
+        }
+
+        @Test
+        fun `use case failure clears the wizard state and reports the error`() {
+            val chatId = 6010L
+            val (_, household) = registerUser(chatId)
+            val promptId = driveThrough(AddCategoryStep.AwaitingKeywords, chatId, household)
+            every {
+                addCategoryUseCase.add(household, "COFFEE", "Coffee shops", 50, emptyList())
+            } throws IllegalStateException("db is on fire")
+
+            feed(textUpdate(chatId, "-", messageId = 42, replyTo = botReplyPrompt(promptId)))
+
+            // Failure message sent; the wizard is dead — feeding another AwaitingKeywords reply
+            // to the same promptId must not re-invoke the use case.
+            feed(textUpdate(chatId, "coffee", messageId = 43, replyTo = botReplyPrompt(promptId)))
+            verify(exactly = 1) { addCategoryUseCase.add(any(), any(), any(), any(), any()) }
+        }
+
+        @Test
+        fun `cancel mid-wizard clears state and confirms cancellation`() {
+            val chatId = 6011L
+            val (_, household) = registerUser(chatId)
+            val promptId = driveThrough(AddCategoryStep.AwaitingDisplayName, chatId, household)
+
+            // Cancel by replying "Забей" to the current bot prompt.
+            feed(textUpdate(chatId, "Забей", messageId = 50, replyTo = botReplyPrompt(promptId)))
+
+            // Any further reply to the same prompt must NOT be treated as a wizard step anymore.
+            feed(textUpdate(chatId, "Coffee shops", messageId = 51, replyTo = botReplyPrompt(promptId)))
+            verify(exactly = 0) { addCategoryUseCase.add(any(), any(), any(), any(), any()) }
+        }
+    }
+
     // ── fixtures ──
 
     private fun request(
@@ -473,6 +676,24 @@ class CategorizationBotTest {
         name = "Test user",
         householdId = householdId,
     )
+
+    /** Wire the mocks so [chatId] belongs to a registered user of a valid household. */
+    private fun registerUser(chatId: Long): Pair<BotUser, Household> {
+        val householdId = UUID.randomUUID()
+        val user = botUser(chatId, householdId)
+        val household = household(householdId)
+        every { householdRepository.findUserByChatId(chatId) } returns user
+        every { householdRepository.findHousehold(householdId) } returns household
+        return user to household
+    }
+
+    /** A message posted by the bot itself (used as `replyTo` when the user answers a bot prompt). */
+    private fun botReplyPrompt(messageId: Int): Message = mockk(relaxed = true) {
+        every { messageId() } returns messageId
+        every { from() } returns mockk(relaxed = true) {
+            every { isBot } returns true
+        }
+    }
 
     private fun household(id: UUID) = Household(
         id = id,
