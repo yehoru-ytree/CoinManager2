@@ -47,23 +47,23 @@ class PlainCommandHandler(
     private val sendLog: (Household, Transaction, Category?) -> Unit,
 ) {
 
-    private val saveKeywordTrigger: String by lazy { translate("trigger.save") }
-    private val addCategoryTrigger: String by lazy { translate("trigger.addCategory") }
-    private val createHouseholdTrigger: String by lazy { translate("trigger.createHousehold") }
-    private val addCardTrigger: String by lazy { translate("trigger.addCard") }
-    private val cashTrigger: String by lazy { translate("trigger.cash") }
-    private val inviteTrigger: String by lazy { translate("trigger.invite") }
-    private val joinTrigger: String by lazy { translate("trigger.join") }
-    private val cancelTrigger: String by lazy { translate("trigger.cancel") }
+    private val saveKeywordTrigger: String by lazy { applyLocale("trigger.save") }
+    private val addCategoryTrigger: String by lazy { applyLocale("trigger.addCategory") }
+    private val createHouseholdTrigger: String by lazy { applyLocale("trigger.createHousehold") }
+    private val addCardTrigger: String by lazy { applyLocale("trigger.addCard") }
+    private val cashTrigger: String by lazy { applyLocale("trigger.cash") }
+    private val inviteTrigger: String by lazy { applyLocale("trigger.invite") }
+    private val joinTrigger: String by lazy { applyLocale("trigger.join") }
+    private val cancelTrigger: String by lazy { applyLocale("trigger.cancel") }
     private val helpTriggers: Set<String> by lazy {
-        translate("trigger.help").split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
+        applyLocale("trigger.help").split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
     }
 
     // ----- Message-side entry points (called by the router in specific phases) -----
 
     /** Send the /start greeting. */
     fun sendStartGreeting(chatId: Long) {
-        gateway.send(chatId, translate("bot.start.greeting", chatId))
+        gateway.send(chatId, applyLocale("bot.start.greeting", chatId))
     }
 
     /** True iff [text] starts with the join trigger (used by router before the registration gate). */
@@ -73,14 +73,14 @@ class PlainCommandHandler(
     fun handleJoinCommand(chatId: Long, msg: Message, text: String) {
         val token = text.trim().removePrefix(joinTrigger).trim()
         if (token.isEmpty()) {
-            reply(msg, translate("join.usage", joinTrigger))
+            reply(msg, applyLocale("join.usage", joinTrigger))
             return
         }
         val result = joinHouseholdUseCase.join(chatId, token)
         when (result) {
-            is JoinHouseholdUseCase.Result.Joined -> reply(msg, translate("join.success", addCardTrigger))
-            JoinHouseholdUseCase.Result.AlreadyInHousehold -> reply(msg, translate("join.alreadyJoined"))
-            JoinHouseholdUseCase.Result.InvalidToken -> reply(msg, translate("join.invalidToken"))
+            is JoinHouseholdUseCase.Result.Joined -> reply(msg, applyLocale("join.success", addCardTrigger))
+            JoinHouseholdUseCase.Result.AlreadyInHousehold -> reply(msg, applyLocale("join.alreadyJoined"))
+            JoinHouseholdUseCase.Result.InvalidToken -> reply(msg, applyLocale("join.invalidToken"))
         }
     }
 
@@ -91,7 +91,7 @@ class PlainCommandHandler(
             return
         }
         if (replyTo == null) {
-            reply(msg, translate("bot.notRegistered", createHouseholdTrigger, joinTrigger))
+            reply(msg, applyLocale("bot.notRegistered", createHouseholdTrigger, joinTrigger))
         }
     }
 
@@ -100,7 +100,7 @@ class PlainCommandHandler(
 
     fun handleInviteCommand(msg: Message, user: BotUser) {
         val token = inviteTokenRepository.create(user.householdId)
-        reply(msg, translate("invite.result", token, joinTrigger))
+        reply(msg, applyLocale("invite.result", token, joinTrigger))
     }
 
     fun matchesHelpTrigger(text: String, replyTo: Message?): Boolean =
@@ -109,7 +109,7 @@ class PlainCommandHandler(
     fun sendHelp(msg: Message) {
         reply(
             msg,
-            translate(
+            applyLocale(
                 "help",
                 createHouseholdTrigger,
                 joinTrigger,
@@ -124,7 +124,7 @@ class PlainCommandHandler(
     }
 
     fun sendUnknown(msg: Message) {
-        reply(msg, translate("bot.unknown"))
+        reply(msg, applyLocale("bot.unknown"))
     }
 
     /** True iff [msg] is a reply to a message posted by the bot. */
@@ -143,12 +143,12 @@ class PlainCommandHandler(
             handleTelegramCommentUseCase(msg.chat().id(), replyToMessageId, text)
         } catch (e: Exception) {
             println("Failed to save Telegram comment: ${e.message}")
-            reply(msg, translate("comment.saveError"))
+            reply(msg, applyLocale("comment.saveError"))
             return
         }
         // Thread the ack under the user's actual comment so the chat keeps a clean
         // «commented → ✓ saved» visual chain.
-        reply(msg, if (saved) translate("comment.saved") else translate("comment.notFound"))
+        reply(msg, if (saved) applyLocale("comment.saved") else applyLocale("comment.notFound"))
     }
 
     // ----- Callback-side entry point (c|... and k|...) -----
@@ -163,7 +163,7 @@ class PlainCommandHandler(
 
     private fun handleCategorizationCallback(cq: CallbackQuery, chatId: Long, user: BotUser, data: String) {
         val parsed = parseCallbackData(user.householdId, data) ?: run {
-            gateway.answerCallback(cq.id(), translate("callback.badCallback"))
+            gateway.answerCallback(cq.id(), applyLocale("callback.badCallback"))
             return
         }
 
@@ -176,7 +176,7 @@ class PlainCommandHandler(
             if (message != null) {
                 gateway.editKeyboard(chatId, message.messageId().toLong())
             }
-            gateway.answerCallback(cq.id(), translate("callback.alreadyDone"))
+            gateway.answerCallback(cq.id(), applyLocale("callback.alreadyDone"))
             return
         }
 
@@ -187,18 +187,18 @@ class PlainCommandHandler(
         // that's already been merged into the sheet → tapping it would double-count.
         clearKeyboardsForTx(parsed.txId)
 
-        gateway.answerCallback(cq.id(), translate("callback.saved"))
+        gateway.answerCallback(cq.id(), applyLocale("callback.saved"))
         sendLogForDecision(parsed.txId, parsed.decision)
     }
 
     private fun handleSaveKeywordCallback(cq: CallbackQuery, chatId: Long, user: BotUser, data: String) {
         val parsed = parseSaveKeywordCallback(user.householdId, data) ?: run {
-            gateway.answerCallback(cq.id(), translate("callback.badCallback"))
+            gateway.answerCallback(cq.id(), applyLocale("callback.badCallback"))
             return
         }
         val tx = transactionRepository.get(parsed.txId).orElse(null)
         if (tx == null) {
-            gateway.answerCallback(cq.id(), translate("callback.txNotFound"))
+            gateway.answerCallback(cq.id(), applyLocale("callback.txNotFound"))
             return
         }
         val result = saveKeywordUseCase(parsed.categoryId, tx.description)
@@ -208,13 +208,13 @@ class PlainCommandHandler(
         }
         val (callbackText, replyText) = when (result) {
             is SaveKeywordUseCase.Result.Saved ->
-                translate("callback.saved") to translate("savekw.success", result.keyword, result.category.displayName)
+                applyLocale("callback.saved") to applyLocale("savekw.success", result.keyword, result.category.displayName)
             is SaveKeywordUseCase.Result.AlreadyPresent ->
-                translate("callback.alreadyPresent") to translate("savekw.alreadyPresent", result.keyword, result.category.displayName)
+                applyLocale("callback.alreadyPresent") to applyLocale("savekw.alreadyPresent", result.keyword, result.category.displayName)
             SaveKeywordUseCase.Result.CategoryNotFound ->
-                translate("callback.categoryNotFound") to translate("savekw.categoryNotFound")
+                applyLocale("callback.categoryNotFound") to applyLocale("savekw.categoryNotFound")
             SaveKeywordUseCase.Result.EmptyKeyword ->
-                translate("callback.empty") to translate("savekw.empty")
+                applyLocale("callback.empty") to applyLocale("savekw.empty")
         }
         gateway.answerCallback(cq.id(), callbackText)
         gateway.send(chatId, replyText)
@@ -223,29 +223,29 @@ class PlainCommandHandler(
     private fun promptSaveKeywordCategory(chatId: Long, replyToMessageId: Long) {
         val record = telegramLogMessageRepository.findByChatAndMessage(chatId, replyToMessageId)
         if (record == null) {
-            gateway.send(chatId, translate("savekw.txMissing"))
+            gateway.send(chatId, applyLocale("savekw.txMissing"))
             return
         }
         val tx = transactionRepository.get(record.transactionId).orElse(null)
         if (tx == null) {
-            gateway.send(chatId, translate("savekw.txDbMissing"))
+            gateway.send(chatId, applyLocale("savekw.txDbMissing"))
             return
         }
         if (tx.isCash) {
             // Cash entries all share description «Наличка» — saving it as a keyword would
             // pollute the category's regex list without ever matching anything useful (cash flow
             // bypasses CategorizeExpenseUseCase entirely).
-            gateway.send(chatId, translate("savekw.cashRejected"))
+            gateway.send(chatId, applyLocale("savekw.cashRejected"))
             return
         }
         val description = tx.description.trim()
         if (description.isEmpty()) {
-            gateway.send(chatId, translate("savekw.emptyDescription"))
+            gateway.send(chatId, applyLocale("savekw.emptyDescription"))
             return
         }
         gateway.send(
             chatId,
-            translate("savekw.choose", description),
+            applyLocale("savekw.choose", description),
             keyboard = buildSaveKeywordKeyboard(tx.householdId, record.transactionId),
         )
     }
@@ -305,7 +305,7 @@ class PlainCommandHandler(
     private fun reply(msg: Message, text: String): Int? =
         gateway.send(msg.chat().id(), text, replyToMessageId = msg.messageId())?.toInt()
 
-    private fun translate(code: String, vararg args: Any?): String {
+    private fun applyLocale(code: String, vararg args: Any?): String {
         val stringArgs: Array<Any?> = Array(args.size) { args[it]?.toString() }
         return messageSource.getMessage(code, stringArgs, Locale.ROOT)
     }

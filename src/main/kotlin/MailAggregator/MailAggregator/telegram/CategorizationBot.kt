@@ -42,7 +42,7 @@ class CategorizationBot(
     }
 
     fun sendTx(transaction: CategorizationRequest) {
-        val text = translate(
+        val text = applyLocale(
             "tx.prompt",
             transaction.description,
             transaction.transactionId,
@@ -70,11 +70,11 @@ class CategorizationBot(
         val time = zoned.format(TIME_FORMAT)
         val amount = "%.2f".format(-transaction.amount.toDouble() / 100.0)
         val currency = currencyCode(transaction.currencyCode)
-        val tail = category?.let { translate("log.tail.category", it.displayName) } ?: translate("log.tail.ignored")
+        val tail = category?.let { applyLocale("log.tail.category", it.displayName) } ?: applyLocale("log.tail.ignored")
 
         val text = buildString {
-            appendLine(translate("log.title", transaction.description))
-            appendLine(translate("log.body", date, time, amount, currency))
+            appendLine(applyLocale("log.title", transaction.description))
+            appendLine(applyLocale("log.body", date, time, amount, currency))
             append(tail)
         }
 
@@ -93,7 +93,7 @@ class CategorizationBot(
         }
     }
 
-    private fun translate(code: String, vararg args: Any?): String {
+    private fun applyLocale(code: String, vararg args: Any?): String {
         val stringArgs: Array<Any?> = Array(args.size) { args[it]?.toString() }
         return messageSource.getMessage(code, stringArgs, Locale.ROOT)
     }
@@ -110,8 +110,8 @@ class CategorizationBot(
             }.toTypedArray()
         }
         rows += arrayOf(
-            InlineKeyboardButton(translate("keyboard.ignore")).callbackData("c|$transactionId|-1"),
-            InlineKeyboardButton(translate("keyboard.other")).callbackData("c|$transactionId|${other.sheetRow}"),
+            InlineKeyboardButton(applyLocale("keyboard.ignore")).callbackData("c|$transactionId|-1"),
+            InlineKeyboardButton(applyLocale("keyboard.other")).callbackData("c|$transactionId|${other.sheetRow}"),
         )
         return InlineKeyboardMarkup(*rows.toTypedArray())
     }

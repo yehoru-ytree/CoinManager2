@@ -121,7 +121,7 @@ class UpdateRouter(
         val chatId = cq.message()?.chat()?.id() ?: return
         val user = householdRepository.findUserByChatId(chatId)
         if (user == null) {
-            gateway.answerCallback(cq.id(), translate("callback.notAllowed"))
+            gateway.answerCallback(cq.id(), applyLocale("callback.notAllowed"))
             return
         }
         val data = cq.data() ?: return
@@ -130,7 +130,7 @@ class UpdateRouter(
             if (wizard.tryHandleCallback(context)) return
         }
         if (plainCommands.tryHandleCallback(cq, chatId, user, data)) return
-        gateway.answerCallback(cq.id(), translate("callback.badCallback"))
+        gateway.answerCallback(cq.id(), applyLocale("callback.badCallback"))
     }
 
     /**
@@ -142,14 +142,14 @@ class UpdateRouter(
         val restartingSelf = currentlyStarting.hasState(chatId)
         val hadAnyFlow = allWizards.fold(false) { acc, wizard -> wizard.resetState(chatId) || acc }
         val notice = when {
-            hadAnyFlow && restartingSelf -> translate("flow.restart.startingNew")
-            hadAnyFlow -> translate("flow.restart.continue")
+            hadAnyFlow && restartingSelf -> applyLocale("flow.restart.startingNew")
+            hadAnyFlow -> applyLocale("flow.restart.continue")
             else -> return
         }
         gateway.send(msg.chat().id(), notice, replyToMessageId = msg.messageId())
     }
 
-    private fun translate(code: String, vararg args: Any?): String {
+    private fun applyLocale(code: String, vararg args: Any?): String {
         val stringArgs: Array<Any?> = Array(args.size) { args[it]?.toString() }
         return messageSource.getMessage(code, stringArgs, Locale.ROOT)
     }

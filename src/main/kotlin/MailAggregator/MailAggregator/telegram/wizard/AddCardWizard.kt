@@ -28,8 +28,8 @@ class AddCardWizard(
 
     private val states = ConcurrentHashMap<Long, State>()
 
-    private val addCardTrigger: String by lazy { translate("trigger.addCard") }
-    private val cancelTrigger: String by lazy { translate("trigger.cancel") }
+    private val addCardTrigger: String by lazy { applyLocale("trigger.addCard") }
+    private val cancelTrigger: String by lazy { applyLocale("trigger.cancel") }
 
     override fun hasState(chatId: Long): Boolean = states.containsKey(chatId)
 
@@ -41,7 +41,7 @@ class AddCardWizard(
 
         if (replyTo.from()?.isBot == true && context.text.trim().equals(cancelTrigger, ignoreCase = true)) {
             states.remove(context.chatId)
-            reply(context.msg, translate("flow.cancelled"))
+            reply(context.msg, applyLocale("flow.cancelled"))
             return true
         }
         if (replyTo.messageId() == state.lastPromptMessageId) {
@@ -60,13 +60,13 @@ class AddCardWizard(
     override fun start(context: MessageContext) {
         val keyboard = InlineKeyboardMarkup(
             arrayOf(
-                InlineKeyboardButton(translate("keyboard.bank.mono")).callbackData("b|mono"),
-                InlineKeyboardButton(translate("keyboard.bank.privat")).callbackData("b|privat"),
+                InlineKeyboardButton(applyLocale("keyboard.bank.mono")).callbackData("b|mono"),
+                InlineKeyboardButton(applyLocale("keyboard.bank.privat")).callbackData("b|privat"),
             ),
         )
         val promptId = gateway.send(
             context.msg.chat().id(),
-            translate("addCard.start", cancelTrigger),
+            applyLocale("addCard.start", cancelTrigger),
             keyboard = keyboard,
             replyToMessageId = context.msg.messageId(),
         ) ?: return
@@ -94,7 +94,7 @@ class AddCardWizard(
         when (state) {
             is State.Mono.AwaitingToken -> {
                 if (text.isEmpty()) {
-                    val promptId = reply(msg, translate("addCard.mono.emptyToken")) ?: return
+                    val promptId = reply(msg, applyLocale("addCard.mono.emptyToken")) ?: return
                     states[chatId] = State.Mono.AwaitingToken(promptId)
                     return
                 }
@@ -103,13 +103,13 @@ class AddCardWizard(
                 } catch (e: Exception) {
                     println("Mono getClientInfo failed for chat $chatId: ${e.message}")
                     states.remove(chatId)
-                    reply(msg, translate("addCard.mono.tokenFailed", e.message ?: ""))
+                    reply(msg, applyLocale("addCard.mono.tokenFailed", e.message ?: ""))
                     return
                 }
                 when (accounts.size) {
                     0 -> {
                         states.remove(chatId)
-                        reply(msg, translate("addCard.mono.noAccounts"))
+                        reply(msg, applyLocale("addCard.mono.noAccounts"))
                     }
                     1 -> persistBankAccount(
                         chatId, msg, user, BankType.MONOBANK,
@@ -123,7 +123,7 @@ class AddCardWizard(
                         )
                         val promptId = gateway.send(
                             msg.chat().id(),
-                            translate("addCard.mono.askAccountChoice", accounts.size),
+                            applyLocale("addCard.mono.askAccountChoice", accounts.size),
                             keyboard = keyboard,
                             replyToMessageId = msg.messageId(),
                         ) ?: return
@@ -141,7 +141,7 @@ class AddCardWizard(
         val state = states[chatId] as? State.AwaitingBankChoice
         val pickerMsg = cq.message()
         if (state == null || pickerMsg == null || pickerMsg.messageId() != state.lastPromptMessageId) {
-            gateway.answerCallback(cq.id(), translate("callback.alreadyDone"))
+            gateway.answerCallback(cq.id(), applyLocale("callback.alreadyDone"))
             return
         }
         val choice = data.split('|').getOrNull(1)
@@ -152,7 +152,7 @@ class AddCardWizard(
             "mono" -> {
                 val promptId = gateway.send(
                     chatId,
-                    translate("addCard.mono.askToken"),
+                    applyLocale("addCard.mono.askToken"),
                     replyToMessageId = pickerMsg.messageId(),
                 ) ?: return
                 states[chatId] = State.Mono.AwaitingToken(promptId.toInt())
@@ -163,7 +163,7 @@ class AddCardWizard(
             }
             else -> {
                 states.remove(chatId)
-                gateway.send(chatId, translate("addCard.bankNotFound"))
+                gateway.send(chatId, applyLocale("addCard.bankNotFound"))
             }
         }
     }
@@ -176,7 +176,7 @@ class AddCardWizard(
             pickerMsg.messageId() != state.lastPromptMessageId ||
             accountId.isEmpty() || accountId !in state.knownAccountIds
         ) {
-            gateway.answerCallback(cq.id(), translate("callback.alreadyDone"))
+            gateway.answerCallback(cq.id(), applyLocale("callback.alreadyDone"))
             return
         }
         gateway.editKeyboard(chatId, pickerMsg.messageId().toLong())
@@ -208,7 +208,7 @@ class AddCardWizard(
                 println("Failed to register Privat email link for chat $chatId: ${e.message}")
                 gateway.send(
                     chatId,
-                    translate("addCard.failed", e.message ?: ""),
+                    applyLocale("addCard.failed", e.message ?: ""),
                     replyToMessageId = replyTo.messageId(),
                 )
                 return
@@ -217,14 +217,14 @@ class AddCardWizard(
         val aliasEmail = composeAliasEmail(suffix)
         gateway.send(
             chatId,
-            translate("addCard.privat.instructions", aliasEmail),
+            applyLocale("addCard.privat.instructions", aliasEmail),
             replyToMessageId = replyTo.messageId(),
         )
         if (existing == null) {
             broadcastInfo(
                 user.householdId,
                 excludeChatId = chatId,
-                text = translate("addCard.broadcast", displayNameOf(tgUser)),
+                text = applyLocale("addCard.broadcast", displayNameOf(tgUser)),
             )
         }
     }
@@ -270,15 +270,15 @@ class AddCardWizard(
         } catch (e: Exception) {
             println("Failed to add $bankType account for chat $chatId: ${e.message}")
             states.remove(chatId)
-            reply(msg, translate("addCard.failed", e.message ?: ""))
+            reply(msg, applyLocale("addCard.failed", e.message ?: ""))
             return
         }
         states.remove(chatId)
-        reply(msg, translate("addCard.success"))
+        reply(msg, applyLocale("addCard.success"))
         broadcastInfo(
             user.householdId,
             excludeChatId = chatId,
-            text = translate("addCard.broadcast", actorDisplayName),
+            text = applyLocale("addCard.broadcast", actorDisplayName),
         )
     }
 
@@ -299,12 +299,12 @@ class AddCardWizard(
     private fun displayNameOf(tgUser: com.pengrad.telegrambot.model.User?): String =
         tgUser?.firstName()?.takeIf { it.isNotBlank() }
             ?: tgUser?.username()?.takeIf { it.isNotBlank() }
-            ?: translate("displayName.unknown")
+            ?: applyLocale("displayName.unknown")
 
     private fun reply(msg: Message, text: String): Int? =
         gateway.send(msg.chat().id(), text, replyToMessageId = msg.messageId())?.toInt()
 
-    private fun translate(code: String, vararg args: Any?): String {
+    private fun applyLocale(code: String, vararg args: Any?): String {
         val stringArgs: Array<Any?> = Array(args.size) { args[it]?.toString() }
         return messageSource.getMessage(code, stringArgs, Locale.ROOT)
     }
