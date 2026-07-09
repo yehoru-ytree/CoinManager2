@@ -7,7 +7,6 @@ import MailAggregator.MailAggregator.common.usecases.AddCashTransactionUseCase
 import MailAggregator.MailAggregator.common.usecases.AddCategoryUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramCommentUseCase
 import MailAggregator.MailAggregator.common.usecases.SaveKeywordUseCase
-import MailAggregator.MailAggregator.household.BotUser
 import MailAggregator.MailAggregator.household.Household
 import MailAggregator.MailAggregator.household.repository.HouseholdRepository
 import MailAggregator.MailAggregator.household.repository.InviteTokenRepository
@@ -15,16 +14,16 @@ import MailAggregator.MailAggregator.household.usecase.AddBankAccountUseCase
 import MailAggregator.MailAggregator.household.usecase.CreateHouseholdUseCase
 import MailAggregator.MailAggregator.household.usecase.JoinHouseholdUseCase
 import MailAggregator.MailAggregator.bank.Transaction
-import MailAggregator.MailAggregator.bank.TransactionStatus
 import MailAggregator.MailAggregator.bank.repository.TransactionRepository
 import MailAggregator.MailAggregator.bank.repository.TransactionStatusRepository
 import MailAggregator.MailAggregator.monobank.api.MonobankApi
 import MailAggregator.MailAggregator.spreadsheet.Authentication
 import MailAggregator.MailAggregator.telegram.model.CategorizationRequest
 import MailAggregator.MailAggregator.telegram.repository.TelegramLogMessageRepository
-import com.pengrad.telegrambot.model.CallbackQuery
-import com.pengrad.telegrambot.model.Message
-import com.pengrad.telegrambot.model.Update
+import MailAggregator.MailAggregator.telegram.wizard.AddCardWizard
+import MailAggregator.MailAggregator.telegram.wizard.AddCategoryWizard
+import MailAggregator.MailAggregator.telegram.wizard.CashEntryWizard
+import MailAggregator.MailAggregator.telegram.wizard.CreateHouseholdWizard
 import com.pengrad.telegrambot.model.request.InlineKeyboardButton
 import com.pengrad.telegrambot.model.request.InlineKeyboardMarkup
 import jakarta.annotation.PostConstruct
@@ -35,6 +34,14 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 import java.util.UUID
 
+/**
+ * Public bot surface: two broadcasts ([sendTx] / [sendLog]) that fan messages out to household
+ * members, a plain [notifyChat] DM for out-of-band messages (e.g. Gmail verification codes),
+ * and long-polling start-up via [startLongPolling].
+ *
+ * Everything else — routing, wizards, plain commands, transaction callbacks — is delegated
+ * to the wired-up [UpdateRouter] tree.
+ */
 class CategorizationBot(
     private val gateway: TelegramGateway,
     private val categoryRepository: CategoryRepository,
@@ -57,30 +64,28 @@ class CategorizationBot(
     private val zoneId: ZoneId = TIME_ZONE,
     private val onDecision: (txId: String, decision: Decision) -> Unit,
 ) {
-    // Extracted wizards — each owns its own state map + step handlers. Router logic in
-    // handleUpdate delegates its mid-flow, start and callback branches to these classes.
-    private val cashEntryWizard = MailAggregator.MailAggregator.telegram.wizard.CashEntryWizard(
+    private val cashEntryWizard = CashEntryWizard(
         gateway = gateway,
         addCashTransactionUseCase = addCashTransactionUseCase,
         messageSource = messageSource,
         zoneId = zoneId,
         broadcastTx = ::sendTx,
     )
-    private val createHouseholdWizard = MailAggregator.MailAggregator.telegram.wizard.CreateHouseholdWizard(
+    private val createHouseholdWizard = CreateHouseholdWizard(
         gateway = gateway,
         householdRepository = householdRepository,
         createHouseholdUseCase = createHouseholdUseCase,
         authentication = authentication,
         messageSource = messageSource,
     )
-    private val addCategoryWizard = MailAggregator.MailAggregator.telegram.wizard.AddCategoryWizard(
+    private val addCategoryWizard = AddCategoryWizard(
         gateway = gateway,
         categoryRepository = categoryRepository,
         addCategoryUseCase = addCategoryUseCase,
         householdRepository = householdRepository,
         messageSource = messageSource,
     )
-    private val addCardWizard = MailAggregator.MailAggregator.telegram.wizard.AddCardWizard(
+    private val addCardWizard = AddCardWizard(
         gateway = gateway,
         addBankAccountUseCase = addBankAccountUseCase,
         monobankApi = monobankApi,
@@ -103,15 +108,22 @@ class CategorizationBot(
         onDecision = onDecision,
         sendLog = ::sendLog,
     )
-
+    private val router = UpdateRouter(
+        gateway = gateway,
+        householdRepository = householdRepository,
+        plainCommands = plainCommands,
+        publicWizards = listOf(createHouseholdWizard),
+        registeredWizards = listOf(addCategoryWizard, addCardWizard, cashEntryWizard),
+        messageSource = messageSource,
+    )
 
     @PostConstruct
     fun startLongPolling() {
-        gateway.start(::handleUpdate)
+        gateway.start(router::handleUpdate)
     }
 
-    // Plain DM to a single chat — used by the email ingestor to relay Gmail forwarding
-    // verification codes to the user without going through the keyword/category pipeline.
+    /** Plain DM to a single chat — used by the email ingestor to relay Gmail forwarding
+     *  verification codes to the user without going through the keyword/category pipeline. */
     fun notifyChat(chatId: Long, text: String) {
         gateway.send(chatId, text)
     }
@@ -168,126 +180,6 @@ class CategorizationBot(
         }
     }
 
-    private fun handleUpdate(update: Update) {
-        val msg = update.message()
-
-        if (msg != null && msg.text() != null) {
-            val chatId = msg.chat().id()
-            val text = msg.text()
-            val replyTo = msg.replyToMessage()
-
-            if (text == "/start") {
-                plainCommands.sendStartGreeting(chatId)
-                return
-            }
-
-            // ===== Public commands (work for unregistered chats too) =====
-
-            val publicContext = MailAggregator.MailAggregator.telegram.wizard.MessageContext(
-                chatId = chatId, msg = msg, text = text, replyTo = replyTo,
-                user = null, household = null, // resolved below only for registered-user flows
-            )
-            if (createHouseholdWizard.tryHandleMidFlow(publicContext)) return
-            if (createHouseholdWizard.matchesStartTrigger(publicContext)) {
-                resetAllFlows(chatId, msg, restarting = createHouseholdWizard.hasState(chatId))
-                createHouseholdWizard.start(publicContext)
-                return
-            }
-            if (plainCommands.matchesJoinTrigger(text, replyTo)) {
-                plainCommands.handleJoinCommand(chatId, msg, text)
-                return
-            }
-
-            // ===== From here on, the chat must belong to a registered user =====
-
-            val user = householdRepository.findUserByChatId(chatId)
-            if (user == null) {
-                plainCommands.handleUnregisteredMessage(msg, text, replyTo)
-                return
-            }
-            val household = householdRepository.findHousehold(user.householdId) ?: return
-
-            // ===== Mid-flow handlers for registered users =====
-
-            val wizardContext = MailAggregator.MailAggregator.telegram.wizard.MessageContext(
-                chatId = chatId, msg = msg, text = text, replyTo = replyTo, user = user, household = household,
-            )
-            if (addCategoryWizard.tryHandleMidFlow(wizardContext)) return
-            if (addCardWizard.tryHandleMidFlow(wizardContext)) return
-            if (cashEntryWizard.tryHandleMidFlow(wizardContext)) return
-
-            // ===== Plain-message triggers for registered users =====
-
-            if (addCategoryWizard.matchesStartTrigger(wizardContext)) {
-                resetAllFlows(chatId, msg, restarting = addCategoryWizard.hasState(chatId))
-                addCategoryWizard.start(wizardContext)
-                return
-            }
-            if (addCardWizard.matchesStartTrigger(wizardContext)) {
-                resetAllFlows(chatId, msg, restarting = addCardWizard.hasState(chatId))
-                addCardWizard.start(wizardContext)
-                return
-            }
-            if (cashEntryWizard.matchesStartTrigger(wizardContext)) {
-                resetAllFlows(chatId, msg, restarting = cashEntryWizard.hasState(chatId))
-                cashEntryWizard.start(wizardContext)
-                return
-            }
-            if (plainCommands.matchesInviteTrigger(text, replyTo)) {
-                plainCommands.handleInviteCommand(msg, user)
-                return
-            }
-            if (plainCommands.isReplyToBotMessage(replyTo)) {
-                plainCommands.handleCommentReply(msg, replyTo!!.messageId().toLong(), text)
-                return
-            }
-            if (plainCommands.matchesHelpTrigger(text, replyTo)) {
-                plainCommands.sendHelp(msg)
-                return
-            }
-            if (replyTo == null) {
-                plainCommands.sendUnknown(msg)
-                return
-            }
-            return
-        }
-
-        val cq = update.callbackQuery() ?: return
-        val chatId = cq.message()?.chat()?.id() ?: return
-        val user = householdRepository.findUserByChatId(chatId)
-        if (user == null) {
-            gateway.answerCallback(cq.id(), t("callback.notAllowed"))
-            return
-        }
-
-        val data = cq.data() ?: return
-        val callbackContext = MailAggregator.MailAggregator.telegram.wizard.CallbackContext(
-            chatId = chatId, cq = cq, data = data, user = user,
-        )
-        if (addCardWizard.tryHandleCallback(callbackContext)) return
-        if (plainCommands.tryHandleCallback(cq, chatId, user, data)) return
-
-        gateway.answerCallback(cq.id(), t("callback.badCallback"))
-    }
-
-    /** Drop any active multi-step flow for this chat. Used when a new plain trigger is received
-     *  so the user doesn't end up trapped in a half-finished flow they forgot about. */
-    private fun resetAllFlows(chatId: Long, msg: Message, restarting: Boolean) {
-        val hadFlow = addCategoryWizard.resetState(chatId) ||
-            createHouseholdWizard.resetState(chatId) ||
-            addCardWizard.resetState(chatId) ||
-            cashEntryWizard.resetState(chatId)
-        val notice = when {
-            hadFlow && restarting -> t("flow.restart.startingNew")
-            hadFlow -> t("flow.restart.continue")
-            else -> return
-        }
-        gateway.send(msg.chat().id(), notice, replyToMessageId = msg.messageId())
-    }
-
-
-    // ----- Broadcast helpers -----
-
     private fun t(code: String, vararg args: Any?): String {
         val stringArgs: Array<Any?> = Array(args.size) { args[it]?.toString() }
         return messageSource.getMessage(code, stringArgs, Locale.ROOT)
@@ -311,6 +203,8 @@ class CategorizationBot(
         return InlineKeyboardMarkup(*rows.toTypedArray())
     }
 
+    /** User's decision on a categorisation prompt — surfaced to the outside world via
+     *  the `onDecision` constructor lambda. */
     sealed class Decision {
         data class Category(val categoryId: UUID) : Decision()
         data object Ignore : Decision()
