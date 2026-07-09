@@ -60,7 +60,6 @@ class CategorizationBot(
     private val onDecision: (txId: String, decision: Decision) -> Unit,
 ) {
     private val addCategoryStates = java.util.concurrent.ConcurrentHashMap<Long, AddCategoryState>()
-    private val createHouseholdStates = java.util.concurrent.ConcurrentHashMap<Long, CreateHouseholdState>()
     private val addCardStates = java.util.concurrent.ConcurrentHashMap<Long, AddCardState>()
 
     // Extracted wizards — each owns its own state map + step handlers. Router logic in
@@ -71,6 +70,13 @@ class CategorizationBot(
         messageSource = messageSource,
         zoneId = zoneId,
         broadcastTx = ::sendTx,
+    )
+    private val createHouseholdWizard = MailAggregator.MailAggregator.telegram.wizard.CreateHouseholdWizard(
+        gateway = gateway,
+        householdRepository = householdRepository,
+        createHouseholdUseCase = createHouseholdUseCase,
+        authentication = authentication,
+        messageSource = messageSource,
     )
 
     // Input-matching values loaded once from messages.properties (lazy so they read the bundle
@@ -169,24 +175,14 @@ class CategorizationBot(
 
             // ===== Public commands (work for unregistered chats too) =====
 
-            val createState = createHouseholdStates[chatId]
-            // Cancel check must run BEFORE the step check: otherwise a "cancel" reply to the current
-            // prompt would fall into handleCreateHouseholdStep and be treated as user input (a sheet id).
-            // See the mirror ordering for AddCategory / AddCard / CashEntry wizards.
-            if (createState != null && replyTo != null && replyTo.from()?.isBot == true &&
-                text.trim().equals(cancelTrigger, ignoreCase = true)
-            ) {
-                createHouseholdStates.remove(chatId)
-                reply(msg, t("flow.cancelled"))
-                return
-            }
-            if (createState != null && replyTo != null && replyTo.messageId() == createState.lastPromptMessageId) {
-                handleCreateHouseholdStep(chatId, msg, text, createState)
-                return
-            }
-            if (replyTo == null && text.trim().equals(createHouseholdTrigger, ignoreCase = true)) {
-                resetAllFlows(chatId, msg, restarting = createState != null)
-                startCreateHouseholdFlow(chatId, msg)
+            val publicContext = MailAggregator.MailAggregator.telegram.wizard.MessageContext(
+                chatId = chatId, msg = msg, text = text, replyTo = replyTo,
+                user = null, household = null, // resolved below only for registered-user flows
+            )
+            if (createHouseholdWizard.tryHandleMidFlow(publicContext)) return
+            if (createHouseholdWizard.matchesStartTrigger(publicContext)) {
+                resetAllFlows(chatId, msg, restarting = createHouseholdWizard.hasState(chatId))
+                createHouseholdWizard.start(publicContext)
                 return
             }
             if (replyTo == null && text.trim().startsWith(joinTrigger, ignoreCase = true)) {
@@ -303,7 +299,7 @@ class CategorizationBot(
      *  so the user doesn't end up trapped in a half-finished flow they forgot about. */
     private fun resetAllFlows(chatId: Long, msg: Message, restarting: Boolean) {
         val hadFlow = addCategoryStates.remove(chatId) != null ||
-            createHouseholdStates.remove(chatId) != null ||
+            createHouseholdWizard.resetState(chatId) ||
             addCardStates.remove(chatId) != null ||
             cashEntryWizard.resetState(chatId)
         if (hadFlow && restarting) {
@@ -313,54 +309,6 @@ class CategorizationBot(
         }
     }
 
-    // ----- Create household flow -----
-
-    private fun startCreateHouseholdFlow(chatId: Long, msg: Message) {
-        if (householdRepository.findUserByChatId(chatId) != null) {
-            reply(msg, t("flow.alreadyInHousehold"))
-            return
-        }
-        val promptId = reply(
-            msg,
-            t("createHousehold.start", cancelTrigger, authentication.serviceAccountEmail),
-        ) ?: return
-        createHouseholdStates[chatId] = CreateHouseholdState.AwaitingSheetId(promptId)
-    }
-
-    private fun handleCreateHouseholdStep(
-        chatId: Long,
-        msg: Message,
-        rawText: String,
-        state: CreateHouseholdState,
-    ) {
-        val text = rawText.trim()
-        when (state) {
-            is CreateHouseholdState.AwaitingSheetId -> {
-                if (text.isEmpty()) {
-                    val promptId = reply(msg, t("createHousehold.emptySheetId")) ?: return
-                    createHouseholdStates[chatId] = CreateHouseholdState.AwaitingSheetId(promptId)
-                    return
-                }
-                val sheetId = extractSheetId(text)
-                val result = try {
-                    createHouseholdUseCase.create(chatId, sheetId)
-                } catch (e: Exception) {
-                    println("Failed to create household for chat $chatId: ${e.message}")
-                    createHouseholdStates.remove(chatId)
-                    reply(msg, t("createHousehold.failed", e.message ?: ""))
-                    return
-                }
-                createHouseholdStates.remove(chatId)
-                when (result) {
-                    is CreateHouseholdUseCase.Result.Created -> reply(
-                        msg,
-                        t("createHousehold.success", addCardTrigger, authentication.serviceAccountEmail),
-                    )
-                    CreateHouseholdUseCase.Result.AlreadyInHousehold -> reply(msg, t("flow.alreadyInHousehold"))
-                }
-            }
-        }
-    }
 
     // ----- Invite / Join -----
 
@@ -985,12 +933,6 @@ class CategorizationBot(
         ) : AddCategoryState()
     }
 
-    private sealed class CreateHouseholdState {
-        abstract val lastPromptMessageId: Int
-
-        data class AwaitingSheetId(override val lastPromptMessageId: Int) : CreateHouseholdState()
-    }
-
     private sealed class AddCardState {
         abstract val lastPromptMessageId: Int
 
@@ -1015,17 +957,9 @@ class CategorizationBot(
         data object Ignore : Decision()
     }
 
-    // Accept either a full Google Sheets URL ("https://docs.google.com/spreadsheets/d/{ID}/edit…")
-    // or a bare ID. Falling back to the trimmed input keeps backward compatibility for users who
-    // already know the drill and paste only the ID.
-    private fun extractSheetId(input: String): String =
-        SHEETS_URL_PATTERN.find(input)?.groupValues?.get(1) ?: input.trim()
-
     companion object {
         private val DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
         private val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm")
-        private val SHEETS_URL_PATTERN: Regex =
-            Regex("""docs\.google\.com/spreadsheets/d/([a-zA-Z0-9_-]+)""")
 
         private fun currencyCode(numericCode: Int): String = when (numericCode) {
             980 -> "UAH"
