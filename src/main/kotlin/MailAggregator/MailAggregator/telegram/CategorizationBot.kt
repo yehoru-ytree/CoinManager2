@@ -14,12 +14,10 @@ import MailAggregator.MailAggregator.household.repository.InviteTokenRepository
 import MailAggregator.MailAggregator.household.usecase.AddBankAccountUseCase
 import MailAggregator.MailAggregator.household.usecase.CreateHouseholdUseCase
 import MailAggregator.MailAggregator.household.usecase.JoinHouseholdUseCase
-import MailAggregator.MailAggregator.bank.BankType
 import MailAggregator.MailAggregator.bank.Transaction
 import MailAggregator.MailAggregator.bank.TransactionStatus
 import MailAggregator.MailAggregator.bank.repository.TransactionRepository
 import MailAggregator.MailAggregator.bank.repository.TransactionStatusRepository
-import MailAggregator.MailAggregator.monobank.api.MonoApiAccount
 import MailAggregator.MailAggregator.monobank.api.MonobankApi
 import MailAggregator.MailAggregator.spreadsheet.Authentication
 import MailAggregator.MailAggregator.telegram.model.CategorizationRequest
@@ -59,8 +57,6 @@ class CategorizationBot(
     private val zoneId: ZoneId = TIME_ZONE,
     private val onDecision: (txId: String, decision: Decision) -> Unit,
 ) {
-    private val addCardStates = java.util.concurrent.ConcurrentHashMap<Long, AddCardState>()
-
     // Extracted wizards — each owns its own state map + step handlers. Router logic in
     // handleUpdate delegates its mid-flow, start and callback branches to these classes.
     private val cashEntryWizard = MailAggregator.MailAggregator.telegram.wizard.CashEntryWizard(
@@ -83,6 +79,14 @@ class CategorizationBot(
         addCategoryUseCase = addCategoryUseCase,
         householdRepository = householdRepository,
         messageSource = messageSource,
+    )
+    private val addCardWizard = MailAggregator.MailAggregator.telegram.wizard.AddCardWizard(
+        gateway = gateway,
+        addBankAccountUseCase = addBankAccountUseCase,
+        monobankApi = monobankApi,
+        householdRepository = householdRepository,
+        messageSource = messageSource,
+        ingestEmail = ingestEmail,
     )
 
     // Input-matching values loaded once from messages.properties (lazy so they read the bundle
@@ -209,25 +213,12 @@ class CategorizationBot(
 
             // ===== Mid-flow handlers for registered users =====
 
-            val cardState = addCardStates[chatId]
-
             val wizardContext = MailAggregator.MailAggregator.telegram.wizard.MessageContext(
                 chatId = chatId, msg = msg, text = text, replyTo = replyTo, user = user, household = household,
             )
             if (addCategoryWizard.tryHandleMidFlow(wizardContext)) return
+            if (addCardWizard.tryHandleMidFlow(wizardContext)) return
             if (cashEntryWizard.tryHandleMidFlow(wizardContext)) return
-
-            if (cardState != null && replyTo != null && replyTo.from()?.isBot == true &&
-                text.trim().equals(cancelTrigger, ignoreCase = true)
-            ) {
-                addCardStates.remove(chatId)
-                reply(msg, t("flow.cancelled"))
-                return
-            }
-            if (cardState != null && replyTo != null && replyTo.messageId() == cardState.lastPromptMessageId) {
-                handleAddCardStep(chatId, msg, text, cardState, user)
-                return
-            }
 
             // ===== Plain-message triggers for registered users =====
 
@@ -236,9 +227,9 @@ class CategorizationBot(
                 addCategoryWizard.start(wizardContext)
                 return
             }
-            if (replyTo == null && text.trim().equals(addCardTrigger, ignoreCase = true)) {
-                resetAllFlows(chatId, msg, restarting = cardState != null)
-                startAddCardFlow(chatId, msg)
+            if (addCardWizard.matchesStartTrigger(wizardContext)) {
+                resetAllFlows(chatId, msg, restarting = addCardWizard.hasState(chatId))
+                addCardWizard.start(wizardContext)
                 return
             }
             if (cashEntryWizard.matchesStartTrigger(wizardContext)) {
@@ -277,11 +268,14 @@ class CategorizationBot(
         }
 
         val data = cq.data() ?: return
+        val callbackContext = MailAggregator.MailAggregator.telegram.wizard.CallbackContext(
+            chatId = chatId, cq = cq, data = data, user = user,
+        )
+        if (addCardWizard.tryHandleCallback(callbackContext)) return
+
         when (data.firstOrNull()) {
             'c' -> handleCategorizationCallback(cq, chatId, user, data)
             'k' -> handleSaveKeywordCallback(cq, chatId, user, data)
-            'b' -> handleBankPickerCallback(cq, chatId, user, data)
-            'm' -> handleMonoAccountCallback(cq, chatId, user, data)
             else -> gateway.answerCallback(cq.id(), t("callback.badCallback"))
         }
     }
@@ -291,7 +285,7 @@ class CategorizationBot(
     private fun resetAllFlows(chatId: Long, msg: Message, restarting: Boolean) {
         val hadFlow = addCategoryWizard.resetState(chatId) ||
             createHouseholdWizard.resetState(chatId) ||
-            addCardStates.remove(chatId) != null ||
+            addCardWizard.resetState(chatId) ||
             cashEntryWizard.resetState(chatId)
         if (hadFlow && restarting) {
             reply(msg, t("flow.restart.startingNew"))
@@ -320,237 +314,6 @@ class CategorizationBot(
             JoinHouseholdUseCase.Result.AlreadyInHousehold -> reply(msg, t("join.alreadyJoined"))
             JoinHouseholdUseCase.Result.InvalidToken -> reply(msg, t("join.invalidToken"))
         }
-    }
-
-    // ----- Add card flow -----
-
-    private fun startAddCardFlow(chatId: Long, msg: Message) {
-        val keyboard = InlineKeyboardMarkup(
-            arrayOf(
-                InlineKeyboardButton(t("keyboard.bank.mono")).callbackData("b|mono"),
-                InlineKeyboardButton(t("keyboard.bank.privat")).callbackData("b|privat"),
-            ),
-        )
-        val promptId = gateway.send(
-            msg.chat().id(),
-            t("addCard.start", cancelTrigger),
-            keyboard = keyboard,
-            replyToMessageId = msg.messageId(),
-        ) ?: return
-        addCardStates[chatId] = AddCardState.AwaitingBankChoice(promptId.toInt())
-    }
-
-    private fun handleBankPickerCallback(cq: CallbackQuery, chatId: Long, user: BotUser, data: String) {
-        val state = addCardStates[chatId] as? AddCardState.AwaitingBankChoice
-        val pickerMsg = cq.message()
-        if (state == null || pickerMsg == null || pickerMsg.messageId() != state.lastPromptMessageId) {
-            gateway.answerCallback(cq.id(), t("callback.alreadyDone"))
-            return
-        }
-        val choice = data.split('|').getOrNull(1)
-        gateway.editKeyboard(chatId, pickerMsg.messageId().toLong())
-        gateway.answerCallback(cq.id())
-
-        when (choice) {
-            "mono" -> {
-                val promptId = gateway.send(
-                    chatId,
-                    t("addCard.mono.askToken"),
-                    replyToMessageId = pickerMsg.messageId(),
-                ) ?: return
-                addCardStates[chatId] = AddCardState.Mono.AwaitingToken(promptId.toInt())
-            }
-            "privat" -> {
-                addCardStates.remove(chatId)
-                startPrivatEmailOnboarding(chatId, pickerMsg, cq.from(), user)
-            }
-            else -> {
-                addCardStates.remove(chatId)
-                gateway.send(chatId, t("addCard.bankNotFound"))
-            }
-        }
-    }
-
-    // PrivatBank doesn't expose a personal HTTP API; instead the user configures a Gmail filter
-    // that forwards Privat's notification emails to a per-user alias of our ingest mailbox. The
-    // bot just generates that suffix, persists the (user, suffix) link as a BankAccount row, and
-    // sends the user the one-time setup instructions. Verification of the Gmail forwarding
-    // address is handled silently by PrivatEmailIngestor.
-    private fun startPrivatEmailOnboarding(
-        chatId: Long,
-        replyTo: Message,
-        tgUser: com.pengrad.telegrambot.model.User?,
-        user: BotUser,
-    ) {
-        val existing = addBankAccountUseCase.findFirstPrivatForUser(user)
-        val suffix = existing?.accountId ?: generatePrivatAliasSuffix(tgUser)
-        if (existing == null) {
-            try {
-                addBankAccountUseCase.add(user, BankType.PRIVATBANK, token = "", accountId = suffix, clientId = null)
-            } catch (e: Exception) {
-                println("Failed to register Privat email link for chat $chatId: ${e.message}")
-                gateway.send(
-                    chatId,
-                    t("addCard.failed", e.message ?: ""),
-                    replyToMessageId = replyTo.messageId(),
-                )
-                return
-            }
-        }
-        val aliasEmail = composeAliasEmail(suffix)
-        gateway.send(
-            chatId,
-            t("addCard.privat.instructions", aliasEmail),
-            replyToMessageId = replyTo.messageId(),
-        )
-        if (existing == null) {
-            broadcastInfo(
-                user.householdId,
-                excludeChatId = chatId,
-                text = t("addCard.broadcast", displayNameOf(tgUser)),
-            )
-        }
-    }
-
-    private fun generatePrivatAliasSuffix(tgUser: com.pengrad.telegrambot.model.User?): String {
-        val base = (tgUser?.firstName() ?: tgUser?.username() ?: "user")
-            .lowercase()
-            .replace(Regex("[^a-z0-9]"), "")
-            .take(12)
-            .ifBlank { "user" }
-        val random = (0 until 4).map { "0123456789abcdef".random() }.joinToString("")
-        return "$base-$random"
-    }
-
-    private fun composeAliasEmail(suffix: String): String {
-        val (local, domain) = ingestEmail.split('@', limit = 2).let {
-            if (it.size == 2) it[0] to it[1] else ingestEmail to "gmail.com"
-        }
-        return "$local+$suffix@$domain"
-    }
-
-    private fun handleAddCardStep(
-        chatId: Long,
-        msg: Message,
-        rawText: String,
-        state: AddCardState,
-        user: BotUser,
-    ) {
-        val text = rawText.trim()
-        when (state) {
-            // Picker phase consumes a button tap, not a text reply — ignore stray text replies.
-            is AddCardState.AwaitingBankChoice -> return
-            is AddCardState.Mono -> handleMonoStep(chatId, msg, text, state, user)
-        }
-    }
-
-    private fun handleMonoStep(
-        chatId: Long,
-        msg: Message,
-        text: String,
-        state: AddCardState.Mono,
-        user: BotUser,
-    ) {
-        when (state) {
-            is AddCardState.Mono.AwaitingToken -> {
-                if (text.isEmpty()) {
-                    val promptId = reply(msg, t("addCard.mono.emptyToken")) ?: return
-                    addCardStates[chatId] = AddCardState.Mono.AwaitingToken(promptId)
-                    return
-                }
-                val accounts = try {
-                    monobankApi.getClientInfo(text).accounts
-                } catch (e: Exception) {
-                    println("Mono getClientInfo failed for chat $chatId: ${e.message}")
-                    addCardStates.remove(chatId)
-                    reply(msg, t("addCard.mono.tokenFailed", e.message ?: ""))
-                    return
-                }
-                when (accounts.size) {
-                    0 -> {
-                        addCardStates.remove(chatId)
-                        reply(msg, t("addCard.mono.noAccounts"))
-                    }
-                    1 -> persistBankAccount(
-                        chatId, msg, user, BankType.MONOBANK,
-                        token = text, accountId = accounts[0].id, clientId = null,
-                    )
-                    else -> {
-                        val keyboard = InlineKeyboardMarkup(
-                            *accounts.map { acc ->
-                                arrayOf(InlineKeyboardButton(formatMonoAccountLabel(acc)).callbackData("m|${acc.id}"))
-                            }.toTypedArray(),
-                        )
-                        val promptId = gateway.send(
-                            msg.chat().id(),
-                            t("addCard.mono.askAccountChoice", accounts.size),
-                            keyboard = keyboard,
-                            replyToMessageId = msg.messageId(),
-                        ) ?: return
-                        addCardStates[chatId] = AddCardState.Mono.AwaitingAccountChoice(
-                            promptId.toInt(), text, accounts.map { it.id }.toSet(),
-                        )
-                    }
-                }
-            }
-            is AddCardState.Mono.AwaitingAccountChoice -> return // tap, not text
-        }
-    }
-
-    private fun handleMonoAccountCallback(cq: CallbackQuery, chatId: Long, user: BotUser, data: String) {
-        val state = addCardStates[chatId] as? AddCardState.Mono.AwaitingAccountChoice
-        val pickerMsg = cq.message()
-        val accountId = data.substringAfter('|', missingDelimiterValue = "")
-        if (state == null || pickerMsg == null ||
-            pickerMsg.messageId() != state.lastPromptMessageId ||
-            accountId.isEmpty() || accountId !in state.knownAccountIds
-        ) {
-            gateway.answerCallback(cq.id(), t("callback.alreadyDone"))
-            return
-        }
-        gateway.editKeyboard(chatId, pickerMsg.messageId().toLong())
-        gateway.answerCallback(cq.id())
-        persistBankAccount(
-            chatId, pickerMsg, user, BankType.MONOBANK,
-            token = state.token, accountId = accountId, clientId = null,
-            actorDisplayName = displayNameOf(cq.from()),
-        )
-    }
-
-    // Inline-button label for a Mono account: "type · CCY · …last-4-of-IBAN" — fits in <40 chars
-    // and gives the user enough to pick the right card without having to memorise the UUID.
-    private fun formatMonoAccountLabel(account: MonoApiAccount): String {
-        val type = account.type?.takeIf { it.isNotBlank() } ?: "account"
-        val currency = currencyCode(account.currencyCode)
-        val ibanTail = account.iban?.takeLast(4)?.let { " · …$it" } ?: ""
-        return "$type · $currency$ibanTail"
-    }
-
-    private fun persistBankAccount(
-        chatId: Long,
-        msg: Message,
-        user: BotUser,
-        bankType: BankType,
-        token: String,
-        accountId: String,
-        clientId: String?,
-        actorDisplayName: String = displayNameOf(msg),
-    ) {
-        try {
-            addBankAccountUseCase.add(user, bankType, token, accountId, clientId)
-        } catch (e: Exception) {
-            println("Failed to add $bankType account for chat $chatId: ${e.message}")
-            addCardStates.remove(chatId)
-            reply(msg, t("addCard.failed", e.message ?: ""))
-            return
-        }
-        addCardStates.remove(chatId)
-        reply(msg, t("addCard.success"))
-        broadcastInfo(
-            user.householdId,
-            excludeChatId = chatId,
-            text = t("addCard.broadcast", actorDisplayName),
-        )
     }
 
     // ----- Existing categorization callbacks -----
@@ -793,22 +556,6 @@ class CategorizationBot(
         val sheetRow = parts[2].toIntOrNull() ?: return null
         val category = categoryRepository.findBySheetRow(householdId, sheetRow) ?: return null
         return SaveKeywordCallback(parts[1], category.id)
-    }
-
-    private sealed class AddCardState {
-        abstract val lastPromptMessageId: Int
-
-        data class AwaitingBankChoice(override val lastPromptMessageId: Int) : AddCardState()
-
-        sealed class Mono : AddCardState() {
-            data class AwaitingToken(override val lastPromptMessageId: Int) : Mono()
-            data class AwaitingAccountChoice(
-                override val lastPromptMessageId: Int,
-                val token: String,
-                val knownAccountIds: Set<String>,
-            ) : Mono()
-        }
-
     }
 
     private data class Parsed(val txId: String, val decision: Decision)
