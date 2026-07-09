@@ -24,17 +24,11 @@ import MailAggregator.MailAggregator.monobank.api.MonobankApi
 import MailAggregator.MailAggregator.spreadsheet.Authentication
 import MailAggregator.MailAggregator.telegram.model.CategorizationRequest
 import MailAggregator.MailAggregator.telegram.repository.TelegramLogMessageRepository
-import com.pengrad.telegrambot.TelegramBot
-import com.pengrad.telegrambot.UpdatesListener
 import com.pengrad.telegrambot.model.CallbackQuery
 import com.pengrad.telegrambot.model.Message
 import com.pengrad.telegrambot.model.Update
 import com.pengrad.telegrambot.model.request.InlineKeyboardButton
 import com.pengrad.telegrambot.model.request.InlineKeyboardMarkup
-import com.pengrad.telegrambot.model.request.ReplyParameters
-import com.pengrad.telegrambot.request.AnswerCallbackQuery
-import com.pengrad.telegrambot.request.EditMessageReplyMarkup
-import com.pengrad.telegrambot.request.SendMessage
 import jakarta.annotation.PostConstruct
 import org.springframework.context.MessageSource
 import java.time.Instant
@@ -44,7 +38,7 @@ import java.util.Locale
 import java.util.UUID
 
 class CategorizationBot(
-    private val token: String,
+    private val gateway: TelegramGateway,
     private val categoryRepository: CategoryRepository,
     private val addCategoryUseCase: AddCategoryUseCase,
     private val transactionRepository: TransactionRepository,
@@ -65,7 +59,6 @@ class CategorizationBot(
     private val zoneId: ZoneId = TIME_ZONE,
     private val onDecision: (txId: String, decision: Decision) -> Unit,
 ) {
-    private val bot = TelegramBot(token)
     private val addCategoryStates = java.util.concurrent.ConcurrentHashMap<Long, AddCategoryState>()
     private val createHouseholdStates = java.util.concurrent.ConcurrentHashMap<Long, CreateHouseholdState>()
     private val addCardStates = java.util.concurrent.ConcurrentHashMap<Long, AddCardState>()
@@ -91,18 +84,13 @@ class CategorizationBot(
 
     @PostConstruct
     fun startLongPolling() {
-        bot.setUpdatesListener({ updates ->
-            updates.forEach { handleUpdate(it) }
-            UpdatesListener.CONFIRMED_UPDATES_ALL
-        }, { e ->
-            // логируй e.response()?.description() / network errors
-        })
+        gateway.start(::handleUpdate)
     }
 
     // Plain DM to a single chat — used by the email ingestor to relay Gmail forwarding
     // verification codes to the user without going through the keyword/category pipeline.
     fun notifyChat(chatId: Long, text: String) {
-        bot.execute(SendMessage(chatId, text))
+        gateway.send(chatId, text)
     }
 
     fun sendTx(transaction: CategorizationRequest) {
@@ -116,8 +104,7 @@ class CategorizationBot(
         val keyboard = buildKeyboard(transaction.householdId, transaction.transactionId)
         val users = householdRepository.findUsersInHousehold(transaction.householdId)
         for (user in users) {
-            val response = bot.execute(SendMessage(user.chatId, text).replyMarkup(keyboard)) ?: continue
-            val messageId = response.message()?.messageId()?.toLong() ?: continue
+            val messageId = gateway.send(user.chatId, text, keyboard = keyboard) ?: continue
             // Persist so we can edit ALL members' keyboards away once the first one taps,
             // and so any member's reply (Сохранить / коммент) on the prompt routes back to the tx.
             telegramLogMessageRepository.save(
@@ -152,10 +139,8 @@ class CategorizationBot(
 
         val users = householdRepository.findUsersInHousehold(household.id)
         for (user in users) {
-            val send = SendMessage(user.chatId, text)
-            priorMessages[user.chatId]?.let { send.replyParameters(ReplyParameters(it.messageId.toInt())) }
-            val response = bot.execute(send) ?: continue
-            val messageId = response.message()?.messageId()?.toLong() ?: continue
+            val replyToId = priorMessages[user.chatId]?.messageId?.toInt()
+            val messageId = gateway.send(user.chatId, text, replyToMessageId = replyToId) ?: continue
             telegramLogMessageRepository.save(household.id, user.chatId, messageId, transaction.id)
         }
     }
@@ -169,7 +154,7 @@ class CategorizationBot(
             val replyTo = msg.replyToMessage()
 
             if (text == "/start") {
-                bot.execute(SendMessage(chatId, t("bot.start.greeting", chatId)))
+                gateway.send(chatId, t("bot.start.greeting", chatId))
                 return
             }
 
@@ -295,7 +280,7 @@ class CategorizationBot(
         val chatId = cq.message()?.chat()?.id() ?: return
         val user = householdRepository.findUserByChatId(chatId)
         if (user == null) {
-            bot.execute(AnswerCallbackQuery(cq.id()).text(t("callback.notAllowed")))
+            gateway.answerCallback(cq.id(), t("callback.notAllowed"))
             return
         }
 
@@ -305,7 +290,7 @@ class CategorizationBot(
             'k' -> handleSaveKeywordCallback(cq, chatId, user, data)
             'b' -> handleBankPickerCallback(cq, chatId, user, data)
             'm' -> handleMonoAccountCallback(cq, chatId, user, data)
-            else -> bot.execute(AnswerCallbackQuery(cq.id()).text(t("callback.badCallback")))
+            else -> gateway.answerCallback(cq.id(), t("callback.badCallback"))
         }
     }
 
@@ -402,33 +387,34 @@ class CategorizationBot(
                 InlineKeyboardButton(t("keyboard.bank.privat")).callbackData("b|privat"),
             ),
         )
-        val response = bot.execute(
-            SendMessage(msg.chat().id(), t("addCard.start", cancelTrigger))
-                .replyParameters(ReplyParameters(msg.messageId()))
-                .replyMarkup(keyboard),
+        val promptId = gateway.send(
+            msg.chat().id(),
+            t("addCard.start", cancelTrigger),
+            keyboard = keyboard,
+            replyToMessageId = msg.messageId(),
         ) ?: return
-        val promptId = response.message()?.messageId() ?: return
-        addCardStates[chatId] = AddCardState.AwaitingBankChoice(promptId)
+        addCardStates[chatId] = AddCardState.AwaitingBankChoice(promptId.toInt())
     }
 
     private fun handleBankPickerCallback(cq: CallbackQuery, chatId: Long, user: BotUser, data: String) {
         val state = addCardStates[chatId] as? AddCardState.AwaitingBankChoice
         val pickerMsg = cq.message()
         if (state == null || pickerMsg == null || pickerMsg.messageId() != state.lastPromptMessageId) {
-            bot.execute(AnswerCallbackQuery(cq.id()).text(t("callback.alreadyDone")))
+            gateway.answerCallback(cq.id(), t("callback.alreadyDone"))
             return
         }
         val choice = data.split('|').getOrNull(1)
-        bot.execute(EditMessageReplyMarkup(chatId, pickerMsg.messageId()))
-        bot.execute(AnswerCallbackQuery(cq.id()))
+        gateway.editKeyboard(chatId, pickerMsg.messageId().toLong())
+        gateway.answerCallback(cq.id())
 
         when (choice) {
             "mono" -> {
-                val promptId = bot.execute(
-                    SendMessage(chatId, t("addCard.mono.askToken"))
-                        .replyParameters(ReplyParameters(pickerMsg.messageId())),
-                )?.message()?.messageId() ?: return
-                addCardStates[chatId] = AddCardState.Mono.AwaitingToken(promptId)
+                val promptId = gateway.send(
+                    chatId,
+                    t("addCard.mono.askToken"),
+                    replyToMessageId = pickerMsg.messageId(),
+                ) ?: return
+                addCardStates[chatId] = AddCardState.Mono.AwaitingToken(promptId.toInt())
             }
             "privat" -> {
                 addCardStates.remove(chatId)
@@ -436,7 +422,7 @@ class CategorizationBot(
             }
             else -> {
                 addCardStates.remove(chatId)
-                bot.execute(SendMessage(chatId, t("addCard.bankNotFound")))
+                gateway.send(chatId, t("addCard.bankNotFound"))
             }
         }
     }
@@ -459,17 +445,19 @@ class CategorizationBot(
                 addBankAccountUseCase.add(user, BankType.PRIVATBANK, token = "", accountId = suffix, clientId = null)
             } catch (e: Exception) {
                 println("Failed to register Privat email link for chat $chatId: ${e.message}")
-                bot.execute(
-                    SendMessage(chatId, t("addCard.failed", e.message ?: ""))
-                        .replyParameters(ReplyParameters(replyTo.messageId())),
+                gateway.send(
+                    chatId,
+                    t("addCard.failed", e.message ?: ""),
+                    replyToMessageId = replyTo.messageId(),
                 )
                 return
             }
         }
         val aliasEmail = composeAliasEmail(suffix)
-        bot.execute(
-            SendMessage(chatId, t("addCard.privat.instructions", aliasEmail))
-                .replyParameters(ReplyParameters(replyTo.messageId())),
+        gateway.send(
+            chatId,
+            t("addCard.privat.instructions", aliasEmail),
+            replyToMessageId = replyTo.messageId(),
         )
         if (existing == null) {
             broadcastInfo(
@@ -549,14 +537,14 @@ class CategorizationBot(
                                 arrayOf(InlineKeyboardButton(formatMonoAccountLabel(acc)).callbackData("m|${acc.id}"))
                             }.toTypedArray(),
                         )
-                        val response = bot.execute(
-                            SendMessage(msg.chat().id(), t("addCard.mono.askAccountChoice", accounts.size))
-                                .replyParameters(ReplyParameters(msg.messageId()))
-                                .replyMarkup(keyboard),
+                        val promptId = gateway.send(
+                            msg.chat().id(),
+                            t("addCard.mono.askAccountChoice", accounts.size),
+                            keyboard = keyboard,
+                            replyToMessageId = msg.messageId(),
                         ) ?: return
-                        val promptId = response.message()?.messageId() ?: return
                         addCardStates[chatId] = AddCardState.Mono.AwaitingAccountChoice(
-                            promptId, text, accounts.map { it.id }.toSet(),
+                            promptId.toInt(), text, accounts.map { it.id }.toSet(),
                         )
                     }
                 }
@@ -573,11 +561,11 @@ class CategorizationBot(
             pickerMsg.messageId() != state.lastPromptMessageId ||
             accountId.isEmpty() || accountId !in state.knownAccountIds
         ) {
-            bot.execute(AnswerCallbackQuery(cq.id()).text(t("callback.alreadyDone")))
+            gateway.answerCallback(cq.id(), t("callback.alreadyDone"))
             return
         }
-        bot.execute(EditMessageReplyMarkup(chatId, pickerMsg.messageId()))
-        bot.execute(AnswerCallbackQuery(cq.id()))
+        gateway.editKeyboard(chatId, pickerMsg.messageId().toLong())
+        gateway.answerCallback(cq.id())
         persistBankAccount(
             chatId, pickerMsg, user, BankType.MONOBANK,
             token = state.token, accountId = accountId, clientId = null,
@@ -680,7 +668,7 @@ class CategorizationBot(
         data: String,
     ) {
         val parsed = parseCallbackData(user.householdId, data) ?: run {
-            bot.execute(AnswerCallbackQuery(cq.id()).text(t("callback.badCallback")))
+            gateway.answerCallback(cq.id(), t("callback.badCallback"))
             return
         }
 
@@ -691,9 +679,9 @@ class CategorizationBot(
         if (existingStatus == TransactionStatus.EXECUTED || existingStatus == TransactionStatus.IGNORED) {
             val message = cq.message()
             if (message != null) {
-                bot.execute(EditMessageReplyMarkup(chatId, message.messageId()))
+                gateway.editKeyboard(chatId, message.messageId().toLong())
             }
-            bot.execute(AnswerCallbackQuery(cq.id()).text(t("callback.alreadyDone")))
+            gateway.answerCallback(cq.id(), t("callback.alreadyDone"))
             return
         }
 
@@ -704,7 +692,7 @@ class CategorizationBot(
         // that's already been merged into the sheet → tapping it would double-count.
         clearKeyboardsForTx(parsed.txId)
 
-        bot.execute(AnswerCallbackQuery(cq.id()).text(t("callback.saved")))
+        gateway.answerCallback(cq.id(), t("callback.saved"))
         sendLogForDecision(parsed.txId, parsed.decision)
     }
 
@@ -712,7 +700,7 @@ class CategorizationBot(
         val prompts = telegramLogMessageRepository.findAllByTransactionId(txId)
         for (prompt in prompts) {
             try {
-                bot.execute(EditMessageReplyMarkup(prompt.chatId, prompt.messageId.toInt()))
+                gateway.editKeyboard(prompt.chatId, prompt.messageId)
             } catch (e: Exception) {
                 // Telegram returns 400 «message is not modified» when the keyboard is already gone,
                 // or «message to edit not found» if the user deleted their copy. Both are fine.
@@ -728,18 +716,18 @@ class CategorizationBot(
         data: String,
     ) {
         val parsed = parseSaveKeywordCallback(user.householdId, data) ?: run {
-            bot.execute(AnswerCallbackQuery(cq.id()).text(t("callback.badCallback")))
+            gateway.answerCallback(cq.id(), t("callback.badCallback"))
             return
         }
         val tx = transactionRepository.get(parsed.txId).orElse(null)
         if (tx == null) {
-            bot.execute(AnswerCallbackQuery(cq.id()).text(t("callback.txNotFound")))
+            gateway.answerCallback(cq.id(), t("callback.txNotFound"))
             return
         }
         val result = saveKeywordUseCase(parsed.categoryId, tx.description)
         val message = cq.message()
         if (message != null) {
-            bot.execute(EditMessageReplyMarkup(chatId, message.messageId()))
+            gateway.editKeyboard(chatId, message.messageId().toLong())
         }
         val (callbackText, replyText) = when (result) {
             is SaveKeywordUseCase.Result.Saved ->
@@ -751,8 +739,8 @@ class CategorizationBot(
             SaveKeywordUseCase.Result.EmptyKeyword ->
                 t("callback.empty") to t("savekw.empty")
         }
-        bot.execute(AnswerCallbackQuery(cq.id()).text(callbackText))
-        bot.execute(SendMessage(chatId, replyText))
+        gateway.answerCallback(cq.id(), callbackText)
+        gateway.send(chatId, replyText)
     }
 
     // ----- Reply handling (comment / Сохранить) -----
@@ -780,29 +768,30 @@ class CategorizationBot(
     private fun promptSaveKeywordCategory(chatId: Long, replyToMessageId: Long) {
         val record = telegramLogMessageRepository.findByChatAndMessage(chatId, replyToMessageId)
         if (record == null) {
-            bot.execute(SendMessage(chatId, t("savekw.txMissing")))
+            gateway.send(chatId, t("savekw.txMissing"))
             return
         }
         val tx = transactionRepository.get(record.transactionId).orElse(null)
         if (tx == null) {
-            bot.execute(SendMessage(chatId, t("savekw.txDbMissing")))
+            gateway.send(chatId, t("savekw.txDbMissing"))
             return
         }
         if (tx.isCash) {
             // Cash entries all share description «Наличка» — saving it as a keyword would
             // pollute the category's regex list without ever matching anything useful (cash flow
             // bypasses CategorizeExpenseUseCase entirely).
-            bot.execute(SendMessage(chatId, t("savekw.cashRejected")))
+            gateway.send(chatId, t("savekw.cashRejected"))
             return
         }
         val description = tx.description.trim()
         if (description.isEmpty()) {
-            bot.execute(SendMessage(chatId, t("savekw.emptyDescription")))
+            gateway.send(chatId, t("savekw.emptyDescription"))
             return
         }
-        bot.execute(
-            SendMessage(chatId, t("savekw.choose", description))
-                .replyMarkup(buildSaveKeywordKeyboard(tx.householdId, record.transactionId)),
+        gateway.send(
+            chatId,
+            t("savekw.choose", description),
+            keyboard = buildSaveKeywordKeyboard(tx.householdId, record.transactionId),
         )
     }
 
@@ -949,13 +938,8 @@ class CategorizationBot(
         return messageSource.getMessage(code, stringArgs, Locale.ROOT)
     }
 
-    private fun reply(msg: Message, text: String): Int? {
-        val response = bot.execute(
-            SendMessage(msg.chat().id(), text)
-                .replyParameters(ReplyParameters(msg.messageId())),
-        )
-        return response?.message()?.messageId()
-    }
+    private fun reply(msg: Message, text: String): Int? =
+        gateway.send(msg.chat().id(), text, replyToMessageId = msg.messageId())?.toInt()
 
     /** Send a plain info message to every member of [householdId] *except* [excludeChatId].
      *  Used to let other household members know that a category was added or a card was linked. */
@@ -964,7 +948,7 @@ class CategorizationBot(
             .filter { it.chatId != excludeChatId }
             .forEach { other ->
                 try {
-                    bot.execute(SendMessage(other.chatId, text))
+                    gateway.send(other.chatId, text)
                 } catch (e: Exception) {
                     println("Failed to broadcast to chat=${other.chatId}: ${e.message}")
                 }

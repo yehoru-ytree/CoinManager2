@@ -24,7 +24,13 @@ import org.springframework.context.annotation.Configuration
 @Configuration
 class TelegramConfig {
     @Bean
+    fun telegramGateway(
+        @Value("\${telegram.bot-token}") botToken: String,
+    ): TelegramGateway = PengradTelegramGateway(botToken)
+
+    @Bean
     fun categorizationBot(
+        telegramGateway: TelegramGateway,
         handleTelegramResponseUseCase: HandleTelegramResponseUseCase,
         handleTelegramCommentUseCase: HandleTelegramCommentUseCase,
         saveKeywordUseCase: SaveKeywordUseCase,
@@ -42,10 +48,9 @@ class TelegramConfig {
         authentication: Authentication,
         monobankApi: MonobankApi,
         messageSource: MessageSource,
-        @Value("\${telegram.bot-token}") botToken: String,
         @Value("\${email.imap.user:}") ingestEmail: String,
     ) = CategorizationBot(
-        token = botToken,
+        gateway = telegramGateway,
         categoryRepository = categoryRepository,
         addCategoryUseCase = addCategoryUseCase,
         transactionRepository = transactionRepository,
