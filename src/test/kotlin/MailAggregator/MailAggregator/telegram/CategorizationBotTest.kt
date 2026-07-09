@@ -18,11 +18,16 @@ import MailAggregator.MailAggregator.household.repository.InviteTokenRepository
 import MailAggregator.MailAggregator.household.usecase.AddBankAccountUseCase
 import MailAggregator.MailAggregator.household.usecase.CreateHouseholdUseCase
 import MailAggregator.MailAggregator.household.usecase.JoinHouseholdUseCase
+import MailAggregator.MailAggregator.bank.BankAccount
+import MailAggregator.MailAggregator.bank.BankType
+import MailAggregator.MailAggregator.monobank.api.MonoApiAccount
+import MailAggregator.MailAggregator.monobank.api.MonoApiClientInfo
 import MailAggregator.MailAggregator.monobank.api.MonobankApi
 import MailAggregator.MailAggregator.spreadsheet.Authentication
 import MailAggregator.MailAggregator.telegram.model.CategorizationRequest
 import MailAggregator.MailAggregator.telegram.repository.TelegramLogMessageRepository
 import MailAggregator.MailAggregator.telegram.repository.jpa.TelegramLogMessageJpaEntity
+import com.pengrad.telegrambot.model.CallbackQuery
 import com.pengrad.telegrambot.model.Message
 import com.pengrad.telegrambot.model.Update
 import io.mockk.Runs
@@ -749,6 +754,283 @@ class CategorizationBotTest {
         }
     }
 
+    @Nested
+    inner class AddCardWizard {
+
+        @Test
+        fun `trigger sends bank picker keyboard and saves AwaitingBankChoice state`() {
+            val chatId = 8001L
+            registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returns 300L
+
+            feed(textUpdate(chatId, "Привязать карту", messageId = 1))
+
+            // Keyboard MUST be present (bank picker); router will thread state via the returned messageId.
+            verify(exactly = 1) {
+                gateway.send(
+                    chatId = chatId,
+                    text = any(),
+                    keyboard = match { it != null },
+                    replyToMessageId = 1,
+                )
+            }
+        }
+
+        @Test
+        fun `bank picker choose Mono asks for token and transitions to Mono AwaitingToken`() {
+            val chatId = 8002L
+            registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(300L, 301L)
+
+            feed(textUpdate(chatId, "Привязать карту", messageId = 1))
+            feed(callbackUpdate(chatId, data = "b|mono", attachedMessageId = 300))
+
+            verify(exactly = 1) { gateway.editKeyboard(chatId, 300L, null) }
+            verify(exactly = 1) { gateway.answerCallback("cb-300", null) }
+            // Second gateway.send (after the trigger) is the mono-token prompt threaded under the picker.
+            verify(exactly = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = 300) }
+        }
+
+        @Test
+        fun `bank picker choose Privat with no existing account registers a new privat email link`() {
+            val chatId = 8003L
+            val (user, _) = registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returns 300L
+            every { addBankAccountUseCase.findFirstPrivatForUser(user) } returns null
+
+            feed(textUpdate(chatId, "Привязать карту", messageId = 1))
+            feed(callbackUpdate(chatId, data = "b|privat", attachedMessageId = 300))
+
+            // Persistence happened with PRIVATBANK and a freshly-generated suffix; instructions sent.
+            verify(exactly = 1) {
+                addBankAccountUseCase.add(
+                    user = user,
+                    bankType = BankType.PRIVATBANK,
+                    token = "",
+                    accountId = any(),
+                    clientId = null,
+                )
+            }
+        }
+
+        @Test
+        fun `bank picker choose Privat with an existing account just resends instructions (no new persistence)`() {
+            val chatId = 8004L
+            val (user, _) = registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returns 300L
+            every { addBankAccountUseCase.findFirstPrivatForUser(user) } returns BankAccount(
+                id = UUID.randomUUID(),
+                userId = user.id,
+                bankType = BankType.PRIVATBANK,
+                token = "",
+                accountId = "existing-suffix",
+                clientId = null,
+            )
+
+            feed(textUpdate(chatId, "Привязать карту", messageId = 1))
+            feed(callbackUpdate(chatId, data = "b|privat", attachedMessageId = 300))
+
+            verify(exactly = 0) { addBankAccountUseCase.add(any(), any(), any(), any(), any()) }
+        }
+
+        @Test
+        fun `bank picker with unknown choice clears state and reports bankNotFound`() {
+            val chatId = 8005L
+            registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(300L, 301L)
+
+            feed(textUpdate(chatId, "Привязать карту", messageId = 1))
+            feed(callbackUpdate(chatId, data = "b|other", attachedMessageId = 300))
+
+            // No further wizard actions — a subsequent Mono-token-shaped update must not persist anything.
+            feed(textUpdate(chatId, "some-token", messageId = 2, replyTo = botReplyPrompt(300)))
+            verify(exactly = 0) { addBankAccountUseCase.add(any(), any(), any(), any(), any()) }
+            verify(exactly = 0) { monobankApi.getClientInfo(any()) }
+        }
+
+        @Test
+        fun `bank picker callback whose attached-message id does not match state is a no-op except answerCallback`() {
+            val chatId = 8006L
+            registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returns 300L
+
+            feed(textUpdate(chatId, "Привязать карту", messageId = 1))
+            // A stale/duplicate callback on a different message id (e.g. an old picker) — must not
+            // touch the keyboard of the current prompt or start the Mono/Privat branches.
+            feed(callbackUpdate(chatId, data = "b|mono", attachedMessageId = 999))
+
+            verify(exactly = 1) { gateway.answerCallback("cb-999", any()) }
+            verify(exactly = 0) { gateway.editKeyboard(any(), any(), any()) }
+            verify(exactly = 0) { monobankApi.getClientInfo(any()) }
+        }
+
+        @Test
+        fun `mono token step with empty token re-prompts, staying in AwaitingToken`() {
+            val chatId = 8007L
+            registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(300L, 301L, 302L)
+
+            feed(textUpdate(chatId, "Привязать карту", messageId = 1))
+            feed(callbackUpdate(chatId, data = "b|mono", attachedMessageId = 300))
+            feed(textUpdate(chatId, "", messageId = 2, replyTo = botReplyPrompt(301)))
+
+            verify(exactly = 0) { monobankApi.getClientInfo(any()) }
+            verify(exactly = 0) { addBankAccountUseCase.add(any(), any(), any(), any(), any()) }
+        }
+
+        @Test
+        fun `mono token step with API failure clears state and reports tokenFailed`() {
+            val chatId = 8008L
+            registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(300L, 301L, 302L, 303L)
+            every { monobankApi.getClientInfo("bad-token") } throws RuntimeException("401 Unauthorized")
+
+            feed(textUpdate(chatId, "Привязать карту", messageId = 1))
+            feed(callbackUpdate(chatId, data = "b|mono", attachedMessageId = 300))
+            feed(textUpdate(chatId, "bad-token", messageId = 2, replyTo = botReplyPrompt(301)))
+
+            verify(exactly = 1) { monobankApi.getClientInfo("bad-token") }
+            verify(exactly = 0) { addBankAccountUseCase.add(any(), any(), any(), any(), any()) }
+            // State cleared — replying to the same prompt id again is ignored.
+            feed(textUpdate(chatId, "another-token", messageId = 3, replyTo = botReplyPrompt(301)))
+            verify(exactly = 1) { monobankApi.getClientInfo(any()) }
+        }
+
+        @Test
+        fun `mono token step with zero accounts clears state and reports noAccounts`() {
+            val chatId = 8009L
+            registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(300L, 301L, 302L)
+            every { monobankApi.getClientInfo("ok-token") } returns MonoApiClientInfo(accounts = emptyList())
+
+            feed(textUpdate(chatId, "Привязать карту", messageId = 1))
+            feed(callbackUpdate(chatId, data = "b|mono", attachedMessageId = 300))
+            feed(textUpdate(chatId, "ok-token", messageId = 2, replyTo = botReplyPrompt(301)))
+
+            verify(exactly = 1) { monobankApi.getClientInfo("ok-token") }
+            verify(exactly = 0) { addBankAccountUseCase.add(any(), any(), any(), any(), any()) }
+        }
+
+        @Test
+        fun `mono token step with exactly one account persists it immediately`() {
+            val chatId = 8010L
+            val (user, _) = registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(300L, 301L, 302L)
+            every { monobankApi.getClientInfo("ok-token") } returns MonoApiClientInfo(
+                accounts = listOf(MonoApiAccount(id = "acct-only", currencyCode = 980)),
+            )
+
+            feed(textUpdate(chatId, "Привязать карту", messageId = 1))
+            feed(callbackUpdate(chatId, data = "b|mono", attachedMessageId = 300))
+            feed(textUpdate(chatId, "ok-token", messageId = 2, replyTo = botReplyPrompt(301)))
+
+            verify(exactly = 1) {
+                addBankAccountUseCase.add(
+                    user = user,
+                    bankType = BankType.MONOBANK,
+                    token = "ok-token",
+                    accountId = "acct-only",
+                    clientId = null,
+                )
+            }
+        }
+
+        @Test
+        fun `mono token step with multiple accounts sends an account-picker keyboard and moves to AwaitingAccountChoice`() {
+            val chatId = 8011L
+            registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(300L, 301L, 302L)
+            every { monobankApi.getClientInfo("ok-token") } returns MonoApiClientInfo(
+                accounts = listOf(
+                    MonoApiAccount(id = "acct-a", currencyCode = 980, iban = "UA000000000001111"),
+                    MonoApiAccount(id = "acct-b", currencyCode = 840, iban = "UA000000000002222"),
+                ),
+            )
+
+            feed(textUpdate(chatId, "Привязать карту", messageId = 1))
+            feed(callbackUpdate(chatId, data = "b|mono", attachedMessageId = 300))
+            feed(textUpdate(chatId, "ok-token", messageId = 2, replyTo = botReplyPrompt(301)))
+
+            // No persistence yet — we hand off to the picker.
+            verify(exactly = 0) { addBankAccountUseCase.add(any(), any(), any(), any(), any()) }
+            // Picker prompt has a keyboard and is threaded under the user's token reply.
+            verify(exactly = 1) {
+                gateway.send(
+                    chatId = chatId,
+                    text = any(),
+                    keyboard = match { it != null },
+                    replyToMessageId = 2,
+                )
+            }
+        }
+
+        @Test
+        fun `mono account choice callback with a valid pick persists the chosen accountId`() {
+            val chatId = 8012L
+            val (user, _) = registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(300L, 301L, 302L)
+            every { monobankApi.getClientInfo("ok-token") } returns MonoApiClientInfo(
+                accounts = listOf(
+                    MonoApiAccount(id = "acct-a", currencyCode = 980),
+                    MonoApiAccount(id = "acct-b", currencyCode = 840),
+                ),
+            )
+
+            feed(textUpdate(chatId, "Привязать карту", messageId = 1))
+            feed(callbackUpdate(chatId, data = "b|mono", attachedMessageId = 300))
+            feed(textUpdate(chatId, "ok-token", messageId = 2, replyTo = botReplyPrompt(301)))
+            // Now in AwaitingAccountChoice at promptId=302
+            feed(callbackUpdate(chatId, data = "m|acct-b", attachedMessageId = 302))
+
+            verify(exactly = 1) {
+                addBankAccountUseCase.add(
+                    user = user,
+                    bankType = BankType.MONOBANK,
+                    token = "ok-token",
+                    accountId = "acct-b",
+                    clientId = null,
+                )
+            }
+        }
+
+        @Test
+        fun `mono account choice callback for an accountId not in the state's knownAccountIds is a no-op except answerCallback`() {
+            val chatId = 8013L
+            registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(300L, 301L, 302L)
+            every { monobankApi.getClientInfo("ok-token") } returns MonoApiClientInfo(
+                accounts = listOf(
+                    MonoApiAccount(id = "acct-a", currencyCode = 980),
+                    MonoApiAccount(id = "acct-b", currencyCode = 840),
+                ),
+            )
+
+            feed(textUpdate(chatId, "Привязать карту", messageId = 1))
+            feed(callbackUpdate(chatId, data = "b|mono", attachedMessageId = 300))
+            feed(textUpdate(chatId, "ok-token", messageId = 2, replyTo = botReplyPrompt(301)))
+            feed(callbackUpdate(chatId, data = "m|not-a-real-account", attachedMessageId = 302))
+
+            verify(exactly = 0) { addBankAccountUseCase.add(any(), any(), any(), any(), any()) }
+        }
+
+        @Test
+        fun `cancel mid-wizard (in Mono AwaitingToken) clears state and skips the mono api`() {
+            val chatId = 8014L
+            registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(300L, 301L, 302L)
+
+            feed(textUpdate(chatId, "Привязать карту", messageId = 1))
+            feed(callbackUpdate(chatId, data = "b|mono", attachedMessageId = 300))
+            feed(textUpdate(chatId, "Забей", messageId = 2, replyTo = botReplyPrompt(301)))
+
+            verify(exactly = 0) { monobankApi.getClientInfo(any()) }
+            verify(exactly = 0) { addBankAccountUseCase.add(any(), any(), any(), any(), any()) }
+            // State cleared — a subsequent reply to the same prompt id is ignored.
+            feed(textUpdate(chatId, "would-be-token", messageId = 3, replyTo = botReplyPrompt(301)))
+            verify(exactly = 0) { monobankApi.getClientInfo(any()) }
+        }
+    }
+
     // ── fixtures ──
 
     private fun request(
@@ -836,6 +1118,36 @@ class CategorizationBotTest {
         sheetId = "sheet-$id",
         templateSheetTitle = "Template",
     )
+
+    /**
+     * Build a fake [Update] carrying an inline-keyboard callback. `attachedMessageId` is the id of
+     * the bot message the button was attached to — matched by the router against wizard state's
+     * `lastPromptMessageId`.
+     */
+    private fun callbackUpdate(
+        chatId: Long,
+        data: String,
+        attachedMessageId: Int,
+        callbackId: String = "cb-$attachedMessageId",
+    ): Update {
+        val attached = mockk<Message>(relaxed = true).apply {
+            every { chat().id() } returns chatId
+            every { messageId() } returns attachedMessageId
+        }
+        val callback = mockk<CallbackQuery>(relaxed = true).apply {
+            every { id() } returns callbackId
+            every { data() } returns data
+            every { message() } returns attached
+            every { from() } returns mockk(relaxed = true) {
+                every { isBot } returns false
+                every { firstName() } returns "Tester"
+            }
+        }
+        return mockk<Update>(relaxed = true).apply {
+            every { message() } returns null
+            every { callbackQuery() } returns callback
+        }
+    }
 
     /**
      * Build a fake [Update] carrying a text [Message] with the given chat, text, and reply-to.
