@@ -17,7 +17,7 @@ class CashEntryWizard(
     private val messageSource: MessageSource,
     private val zoneId: ZoneId,
     /** Called after a cash tx is persisted to broadcast the categorisation prompt to household members. */
-    private val broadcastTx: (CategorizationRequest) -> Unit,
+    private val promptHousehold: (CategorizationRequest) -> Unit,
 ) : Wizard {
 
     private val states = ConcurrentHashMap<Long, State>()
@@ -79,7 +79,7 @@ class CashEntryWizard(
         states.remove(chatId)
         // Reuse the categorisation prompt path — bot broadcasts the keyboard to all household
         // members; whoever taps a category triggers the standard merge-into-sheet + log pipeline.
-        broadcastTx(
+        promptHousehold(
             CategorizationRequest(
                 transactionId = tx.id,
                 householdId = tx.householdId,

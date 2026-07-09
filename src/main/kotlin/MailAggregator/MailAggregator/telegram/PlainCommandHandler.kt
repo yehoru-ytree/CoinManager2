@@ -28,7 +28,7 @@ import java.util.UUID
  *
  * Unlike [wizard.Wizard]s, this handler owns no per-chat state — every call is a one-shot action.
  * Split off from [CategorizationBot] so the bot itself is reduced to the broadcast API
- * ([CategorizationBot.sendTx] / [CategorizationBot.sendLog]) and the router.
+ * ([CategorizationBot.promptHousehold] / [CategorizationBot.notifyHousehold]) and the router.
  */
 class PlainCommandHandler(
     private val gateway: TelegramGateway,
@@ -43,8 +43,8 @@ class PlainCommandHandler(
     private val joinHouseholdUseCase: JoinHouseholdUseCase,
     private val messageSource: MessageSource,
     private val onDecision: (String, CategorizationBot.Decision) -> Unit,
-    /** Reused broadcast: category picked -> per-user log fan-out. Wired to CategorizationBot.sendLog. */
-    private val sendLog: (Household, Transaction, Category?) -> Unit,
+    /** Reused broadcast: category picked -> per-user log fan-out. Wired to CategorizationBot.notifyHousehold. */
+    private val notifyHousehold: (Household, Transaction, Category?) -> Unit,
 ) {
 
     private val saveKeywordTrigger: String by lazy { applyLocale("trigger.save") }
@@ -188,7 +188,7 @@ class PlainCommandHandler(
         clearKeyboardsForTx(parsed.txId)
 
         gateway.answerCallback(cq.id(), applyLocale("callback.saved"))
-        sendLogForDecision(parsed.txId, parsed.decision)
+        notifyDecision(parsed.txId, parsed.decision)
     }
 
     private fun handleSaveKeywordCallback(cq: CallbackQuery, chatId: Long, user: BotUser, data: String) {
@@ -263,14 +263,14 @@ class PlainCommandHandler(
         }
     }
 
-    private fun sendLogForDecision(txId: String, decision: CategorizationBot.Decision) {
+    private fun notifyDecision(txId: String, decision: CategorizationBot.Decision) {
         val tx = transactionRepository.get(txId).orElse(null) ?: return
         val household = householdRepository.findHousehold(tx.householdId) ?: return
         val category = when (decision) {
             is CategorizationBot.Decision.Category -> categoryRepository.findById(decision.categoryId) ?: return
             CategorizationBot.Decision.Ignore -> null
         }
-        sendLog(household, tx, category)
+        notifyHousehold(household, tx, category)
     }
 
     private fun buildSaveKeywordKeyboard(householdId: UUID, transactionId: String): InlineKeyboardMarkup {

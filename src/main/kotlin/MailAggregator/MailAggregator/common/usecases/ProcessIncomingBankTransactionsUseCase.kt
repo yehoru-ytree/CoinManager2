@@ -123,7 +123,7 @@ class ProcessIncomingBankTransactionsUseCase(
             val tx = txById[txId] ?: return@forEach
             val category = categoryRepository.findById(categoryId) ?: return@forEach
             try {
-                categorizationBot.sendLog(household, tx, category)
+                categorizationBot.notifyHousehold(household, tx, category)
             } catch (e: Exception) {
                 println("Failed to send Telegram log for transaction $txId: ${e.message}")
             }
