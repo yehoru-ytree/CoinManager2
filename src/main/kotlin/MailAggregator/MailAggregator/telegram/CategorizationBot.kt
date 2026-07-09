@@ -59,7 +59,6 @@ class CategorizationBot(
     private val zoneId: ZoneId = TIME_ZONE,
     private val onDecision: (txId: String, decision: Decision) -> Unit,
 ) {
-    private val addCategoryStates = java.util.concurrent.ConcurrentHashMap<Long, AddCategoryState>()
     private val addCardStates = java.util.concurrent.ConcurrentHashMap<Long, AddCardState>()
 
     // Extracted wizards — each owns its own state map + step handlers. Router logic in
@@ -78,6 +77,13 @@ class CategorizationBot(
         authentication = authentication,
         messageSource = messageSource,
     )
+    private val addCategoryWizard = MailAggregator.MailAggregator.telegram.wizard.AddCategoryWizard(
+        gateway = gateway,
+        categoryRepository = categoryRepository,
+        addCategoryUseCase = addCategoryUseCase,
+        householdRepository = householdRepository,
+        messageSource = messageSource,
+    )
 
     // Input-matching values loaded once from messages.properties (lazy so they read the bundle
     // after Spring has finished wiring `messageSource`, not during property initialization).
@@ -89,13 +95,9 @@ class CategorizationBot(
     private val inviteTrigger: String by lazy { t("trigger.invite") }
     private val joinTrigger: String by lazy { t("trigger.join") }
     private val cancelTrigger: String by lazy { t("trigger.cancel") }
-    private val emptyKeywordsTrigger: String by lazy { t("trigger.emptyKeywords") }
     private val helpTriggers: Set<String> by lazy {
         t("trigger.help").split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
     }
-    private val namePattern: Regex by lazy { Regex(t("validation.namePattern")) }
-    private val priorityMin: Int by lazy { t("validation.priority.min").toInt() }
-    private val priorityMax: Int by lazy { t("validation.priority.max").toInt() }
 
     @PostConstruct
     fun startLongPolling() {
@@ -207,30 +209,19 @@ class CategorizationBot(
 
             // ===== Mid-flow handlers for registered users =====
 
-            val addState = addCategoryStates[chatId]
             val cardState = addCardStates[chatId]
 
             val wizardContext = MailAggregator.MailAggregator.telegram.wizard.MessageContext(
                 chatId = chatId, msg = msg, text = text, replyTo = replyTo, user = user, household = household,
             )
+            if (addCategoryWizard.tryHandleMidFlow(wizardContext)) return
             if (cashEntryWizard.tryHandleMidFlow(wizardContext)) return
 
-            if (addState != null && replyTo != null && replyTo.from()?.isBot == true &&
-                text.trim().equals(cancelTrigger, ignoreCase = true)
-            ) {
-                cancelAddCategoryFlow(chatId, msg)
-                return
-            }
             if (cardState != null && replyTo != null && replyTo.from()?.isBot == true &&
                 text.trim().equals(cancelTrigger, ignoreCase = true)
             ) {
                 addCardStates.remove(chatId)
                 reply(msg, t("flow.cancelled"))
-                return
-            }
-
-            if (addState != null && replyTo != null && replyTo.messageId() == addState.lastPromptMessageId) {
-                handleAddCategoryStep(chatId, msg, text, addState, household)
                 return
             }
             if (cardState != null && replyTo != null && replyTo.messageId() == cardState.lastPromptMessageId) {
@@ -240,9 +231,9 @@ class CategorizationBot(
 
             // ===== Plain-message triggers for registered users =====
 
-            if (replyTo == null && text.trim().equals(addCategoryTrigger, ignoreCase = true)) {
-                resetAllFlows(chatId, msg, restarting = addState != null)
-                startAddCategoryFlow(chatId, msg)
+            if (addCategoryWizard.matchesStartTrigger(wizardContext)) {
+                resetAllFlows(chatId, msg, restarting = addCategoryWizard.hasState(chatId))
+                addCategoryWizard.start(wizardContext)
                 return
             }
             if (replyTo == null && text.trim().equals(addCardTrigger, ignoreCase = true)) {
@@ -298,7 +289,7 @@ class CategorizationBot(
     /** Drop any active multi-step flow for this chat. Used when a new plain trigger is received
      *  so the user doesn't end up trapped in a half-finished flow they forgot about. */
     private fun resetAllFlows(chatId: Long, msg: Message, restarting: Boolean) {
-        val hadFlow = addCategoryStates.remove(chatId) != null ||
+        val hadFlow = addCategoryWizard.resetState(chatId) ||
             createHouseholdWizard.resetState(chatId) ||
             addCardStates.remove(chatId) != null ||
             cashEntryWizard.resetState(chatId)
@@ -708,114 +699,6 @@ class CategorizationBot(
         sendLog(household, tx, category)
     }
 
-    // ----- Add category flow (existing) -----
-
-    private fun startAddCategoryFlow(chatId: Long, msg: Message) {
-        val promptId = reply(msg, t("addCategory.start", cancelTrigger)) ?: return
-        addCategoryStates[chatId] = AddCategoryState.AwaitingName(promptId)
-    }
-
-    private fun handleAddCategoryStep(
-        chatId: Long,
-        msg: Message,
-        rawText: String,
-        state: AddCategoryState,
-        household: Household,
-    ) {
-        val text = rawText.trim()
-        when (state) {
-            is AddCategoryState.AwaitingName -> handleNameStep(chatId, msg, text, household)
-            is AddCategoryState.AwaitingDisplayName -> handleDisplayNameStep(chatId, msg, text, state)
-            is AddCategoryState.AwaitingPriority -> handlePriorityStep(chatId, msg, text, state)
-            is AddCategoryState.AwaitingKeywords -> handleKeywordsStep(chatId, msg, text, state, household)
-        }
-    }
-
-    private fun cancelAddCategoryFlow(chatId: Long, msg: Message) {
-        addCategoryStates.remove(chatId)
-        reply(msg, "Окей, забил.")
-    }
-
-    private fun handleNameStep(chatId: Long, msg: Message, name: String, household: Household) {
-        if (!name.matches(namePattern)) {
-            val promptId = reply(msg, t("addCategory.name.bad")) ?: return
-            addCategoryStates[chatId] = AddCategoryState.AwaitingName(promptId)
-            return
-        }
-        if (categoryRepository.findByName(household.id, name) != null) {
-            val promptId = reply(msg, t("addCategory.name.exists", name)) ?: return
-            addCategoryStates[chatId] = AddCategoryState.AwaitingName(promptId)
-            return
-        }
-        val promptId = reply(msg, t("addCategory.displayName.prompt")) ?: return
-        addCategoryStates[chatId] = AddCategoryState.AwaitingDisplayName(promptId, name)
-    }
-
-    private fun handleDisplayNameStep(
-        chatId: Long,
-        msg: Message,
-        displayName: String,
-        prev: AddCategoryState.AwaitingDisplayName,
-    ) {
-        if (displayName.isEmpty()) {
-            val promptId = reply(msg, t("addCategory.displayName.empty")) ?: return
-            addCategoryStates[chatId] = prev.copy(lastPromptMessageId = promptId)
-            return
-        }
-        val promptId = reply(msg, t("addCategory.priority.prompt", priorityMin, priorityMax)) ?: return
-        addCategoryStates[chatId] = AddCategoryState.AwaitingPriority(promptId, prev.name, displayName)
-    }
-
-    private fun handlePriorityStep(
-        chatId: Long,
-        msg: Message,
-        priorityRaw: String,
-        prev: AddCategoryState.AwaitingPriority,
-    ) {
-        val priority = priorityRaw.toIntOrNull()
-        if (priority == null || priority !in priorityMin..priorityMax) {
-            val promptId = reply(msg, t("addCategory.priority.bad", priorityMin, priorityMax)) ?: return
-            addCategoryStates[chatId] = prev.copy(lastPromptMessageId = promptId)
-            return
-        }
-        val promptId = reply(msg, t("addCategory.keywords.prompt", emptyKeywordsTrigger)) ?: return
-        addCategoryStates[chatId] = AddCategoryState.AwaitingKeywords(promptId, prev.name, prev.displayName, priority)
-    }
-
-    private fun handleKeywordsStep(
-        chatId: Long,
-        msg: Message,
-        keywordsRaw: String,
-        prev: AddCategoryState.AwaitingKeywords,
-        household: Household,
-    ) {
-        val keywords = if (keywordsRaw == emptyKeywordsTrigger) {
-            emptyList()
-        } else {
-            keywordsRaw.split(',').map { it.trim() }.filter { it.isNotEmpty() }
-        }
-        val category = try {
-            addCategoryUseCase.add(
-                household = household,
-                name = prev.name,
-                displayName = prev.displayName,
-                priority = prev.priority,
-                keywords = keywords,
-            )
-        } catch (e: Exception) {
-            println("Failed to add category ${prev.name}: ${e.message}")
-            addCategoryStates.remove(chatId)
-            reply(msg, t("addCategory.createFailed", e.message ?: ""))
-            return
-        }
-        addCategoryStates.remove(chatId)
-        reply(msg, t("addCategory.created", category.name, category.displayName, category.sheetRow))
-        broadcastInfo(
-            household.id,
-            excludeChatId = chatId,
-            text = t("addCategory.broadcast", displayNameOf(msg), category.displayName),
-        )
-    }
 
     // ----- Help & utilities -----
 
@@ -910,27 +793,6 @@ class CategorizationBot(
         val sheetRow = parts[2].toIntOrNull() ?: return null
         val category = categoryRepository.findBySheetRow(householdId, sheetRow) ?: return null
         return SaveKeywordCallback(parts[1], category.id)
-    }
-
-    private sealed class AddCategoryState {
-        abstract val lastPromptMessageId: Int
-
-        data class AwaitingName(override val lastPromptMessageId: Int) : AddCategoryState()
-        data class AwaitingDisplayName(
-            override val lastPromptMessageId: Int,
-            val name: String,
-        ) : AddCategoryState()
-        data class AwaitingPriority(
-            override val lastPromptMessageId: Int,
-            val name: String,
-            val displayName: String,
-        ) : AddCategoryState()
-        data class AwaitingKeywords(
-            override val lastPromptMessageId: Int,
-            val name: String,
-            val displayName: String,
-            val priority: Int,
-        ) : AddCategoryState()
     }
 
     private sealed class AddCardState {
