@@ -733,39 +733,17 @@ class CategorizationBotTest {
         }
 
         @Test
-        fun `cancel text as reply to current sheet-id prompt is treated as a sheet id (quirk — step-check wins over cancel-check in this flow)`() {
-            // Unlike AddCategory (where cancel-check runs first), CreateHousehold's router checks the
-            // step branch first (see handleUpdate: lines around 163-166 vs 168-174). So "Забей" replied
-            // to the *current* prompt reaches handleCreateHouseholdStep and is passed to the use case
-            // as the sheet id. If this ever changes, this test will flag it — decide whether the new
-            // behaviour is intended.
+        fun `cancel mid-wizard clears state and skips the use case`() {
             val chatId = 7008L
-            val householdId = UUID.randomUUID()
-            every { householdRepository.findUserByChatId(chatId) } returns null
-            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(200L, 201L)
-            every { createHouseholdUseCase.create(chatId, "Забей") } returns CreateHouseholdUseCase.Result.AlreadyInHousehold
-
-            feed(textUpdate(chatId, "Создать таблицу", messageId = 1))
-            feed(textUpdate(chatId, "Забей", messageId = 2, replyTo = botReplyPrompt(200)))
-
-            verify(exactly = 1) { createHouseholdUseCase.create(chatId, "Забей") }
-        }
-
-        @Test
-        fun `cancel text as reply to a DIFFERENT (older) bot message clears state without touching the use case`() {
-            // The cancel-check requires replyTo to be a bot message AND its messageId to NOT match the
-            // current prompt id (so the step-check doesn't intercept). Simulate replying to an older
-            // bot message id 199 while the current wizard prompt is 200.
-            val chatId = 7009L
             every { householdRepository.findUserByChatId(chatId) } returns null
             every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(200L, 201L, 202L)
 
             feed(textUpdate(chatId, "Создать таблицу", messageId = 1))
-            feed(textUpdate(chatId, "Забей", messageId = 2, replyTo = botReplyPrompt(199)))
+            feed(textUpdate(chatId, "Забей", messageId = 2, replyTo = botReplyPrompt(200)))
 
+            // Cancel path never touches the use case…
             verify(exactly = 0) { createHouseholdUseCase.create(any(), any()) }
-
-            // State is now cleared — subsequent reply to current prompt id 200 is no longer a step.
+            // …and a later reply to the same prompt id is no longer a step.
             feed(textUpdate(chatId, "sheet-x", messageId = 3, replyTo = botReplyPrompt(200)))
             verify(exactly = 0) { createHouseholdUseCase.create(any(), any()) }
         }
