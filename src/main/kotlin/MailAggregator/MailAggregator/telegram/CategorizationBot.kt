@@ -62,7 +62,16 @@ class CategorizationBot(
     private val addCategoryStates = java.util.concurrent.ConcurrentHashMap<Long, AddCategoryState>()
     private val createHouseholdStates = java.util.concurrent.ConcurrentHashMap<Long, CreateHouseholdState>()
     private val addCardStates = java.util.concurrent.ConcurrentHashMap<Long, AddCardState>()
-    private val cashEntryStates = java.util.concurrent.ConcurrentHashMap<Long, CashEntryState>()
+
+    // Extracted wizards — each owns its own state map + step handlers. Router logic in
+    // handleUpdate delegates its mid-flow, start and callback branches to these classes.
+    private val cashEntryWizard = MailAggregator.MailAggregator.telegram.wizard.CashEntryWizard(
+        gateway = gateway,
+        addCashTransactionUseCase = addCashTransactionUseCase,
+        messageSource = messageSource,
+        zoneId = zoneId,
+        broadcastTx = ::sendTx,
+    )
 
     // Input-matching values loaded once from messages.properties (lazy so they read the bundle
     // after Spring has finished wiring `messageSource`, not during property initialization).
@@ -204,7 +213,11 @@ class CategorizationBot(
 
             val addState = addCategoryStates[chatId]
             val cardState = addCardStates[chatId]
-            val cashState = cashEntryStates[chatId]
+
+            val wizardContext = MailAggregator.MailAggregator.telegram.wizard.MessageContext(
+                chatId = chatId, msg = msg, text = text, replyTo = replyTo, user = user, household = household,
+            )
+            if (cashEntryWizard.tryHandleMidFlow(wizardContext)) return
 
             if (addState != null && replyTo != null && replyTo.from()?.isBot == true &&
                 text.trim().equals(cancelTrigger, ignoreCase = true)
@@ -219,13 +232,6 @@ class CategorizationBot(
                 reply(msg, t("flow.cancelled"))
                 return
             }
-            if (cashState != null && replyTo != null && replyTo.from()?.isBot == true &&
-                text.trim().equals(cancelTrigger, ignoreCase = true)
-            ) {
-                cashEntryStates.remove(chatId)
-                reply(msg, t("flow.cancelled"))
-                return
-            }
 
             if (addState != null && replyTo != null && replyTo.messageId() == addState.lastPromptMessageId) {
                 handleAddCategoryStep(chatId, msg, text, addState, household)
@@ -233,10 +239,6 @@ class CategorizationBot(
             }
             if (cardState != null && replyTo != null && replyTo.messageId() == cardState.lastPromptMessageId) {
                 handleAddCardStep(chatId, msg, text, cardState, user)
-                return
-            }
-            if (cashState != null && replyTo != null && replyTo.messageId() == cashState.lastPromptMessageId) {
-                handleCashEntryStep(chatId, msg, text, cashState, household)
                 return
             }
 
@@ -252,9 +254,9 @@ class CategorizationBot(
                 startAddCardFlow(chatId, msg)
                 return
             }
-            if (replyTo == null && text.trim().equals(cashTrigger, ignoreCase = true)) {
-                resetAllFlows(chatId, msg, restarting = cashState != null)
-                startCashEntryFlow(chatId, msg)
+            if (cashEntryWizard.matchesStartTrigger(wizardContext)) {
+                resetAllFlows(chatId, msg, restarting = cashEntryWizard.hasState(chatId))
+                cashEntryWizard.start(wizardContext)
                 return
             }
             if (replyTo == null && text.trim().equals(inviteTrigger, ignoreCase = true)) {
@@ -303,7 +305,7 @@ class CategorizationBot(
         val hadFlow = addCategoryStates.remove(chatId) != null ||
             createHouseholdStates.remove(chatId) != null ||
             addCardStates.remove(chatId) != null ||
-            cashEntryStates.remove(chatId) != null
+            cashEntryWizard.resetState(chatId)
         if (hadFlow && restarting) {
             reply(msg, t("flow.restart.startingNew"))
         } else if (hadFlow) {
@@ -610,56 +612,6 @@ class CategorizationBot(
             excludeChatId = chatId,
             text = t("addCard.broadcast", actorDisplayName),
         )
-    }
-
-    // ----- Cash entry flow -----
-
-    private fun startCashEntryFlow(chatId: Long, msg: Message) {
-        val promptId = reply(msg, t("cash.start", cancelTrigger)) ?: return
-        cashEntryStates[chatId] = CashEntryState.AwaitingAmount(promptId)
-    }
-
-    private fun handleCashEntryStep(
-        chatId: Long,
-        msg: Message,
-        rawText: String,
-        state: CashEntryState,
-        household: Household,
-    ) {
-        val amount = parseAmount(rawText)
-        if (amount == null) {
-            val promptId = reply(msg, t("cash.badAmount")) ?: return
-            cashEntryStates[chatId] = CashEntryState.AwaitingAmount(promptId)
-            return
-        }
-        val tx = try {
-            addCashTransactionUseCase.add(household.id, amount)
-        } catch (e: Exception) {
-            println("Failed to add cash transaction for chat $chatId: ${e.message}")
-            cashEntryStates.remove(chatId)
-            reply(msg, t("cash.failed", e.message ?: ""))
-            return
-        }
-        cashEntryStates.remove(chatId)
-        // Reuse the categorisation prompt path — bot broadcasts the keyboard to all household
-        // members; whoever taps a category triggers the standard merge-into-sheet + log pipeline.
-        sendTx(
-            CategorizationRequest(
-                transactionId = tx.id,
-                householdId = tx.householdId,
-                amount = "%.2f ₴".format(amount),
-                description = tx.description,
-                transactionTime = Instant.ofEpochSecond(tx.time)
-                    .atZone(zoneId)
-                    .toLocalDateTime().toString(),
-            ),
-        )
-    }
-
-    private fun parseAmount(raw: String): Double? {
-        val normalized = raw.trim().replace(',', '.')
-        val value = normalized.toDoubleOrNull() ?: return null
-        return value.takeIf { it > 0.0 }
     }
 
     // ----- Existing categorization callbacks -----
@@ -1053,12 +1005,6 @@ class CategorizationBot(
             ) : Mono()
         }
 
-    }
-
-    private sealed class CashEntryState {
-        abstract val lastPromptMessageId: Int
-
-        data class AwaitingAmount(override val lastPromptMessageId: Int) : CashEntryState()
     }
 
     private data class Parsed(val txId: String, val decision: Decision)
