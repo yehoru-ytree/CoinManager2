@@ -614,6 +614,163 @@ class CategorizationBotTest {
         }
     }
 
+    @Nested
+    inner class CreateHouseholdWizard {
+
+        @Test
+        fun `trigger while unregistered asks for sheet id and saves AwaitingSheetId state`() {
+            val chatId = 7001L
+            every { householdRepository.findUserByChatId(chatId) } returns null
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returns 200L
+
+            feed(textUpdate(chatId, "Создать таблицу", messageId = 1))
+
+            verify(exactly = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = 1) }
+            verify(exactly = 0) { createHouseholdUseCase.create(any(), any()) }
+        }
+
+        @Test
+        fun `trigger while already registered rejects with alreadyInHousehold and skips the wizard`() {
+            val chatId = 7002L
+            registerUser(chatId)
+
+            feed(textUpdate(chatId, "Создать таблицу", messageId = 1))
+
+            // Router still delivers a reply, but no wizard state is created — a subsequent
+            // reply-to-this-message won't be treated as a step.
+            verify(exactly = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = 1) }
+            verify(exactly = 0) { createHouseholdUseCase.create(any(), any()) }
+
+            // Confirm no wizard state was saved: replying to the ack with any text is treated as unknown-text, not as a sheetId.
+            feed(textUpdate(chatId, "abc123", messageId = 2, replyTo = botReplyPrompt(1)))
+            verify(exactly = 0) { createHouseholdUseCase.create(any(), any()) }
+        }
+
+        @Test
+        fun `empty sheet id re-prompts, staying in AwaitingSheetId`() {
+            val chatId = 7003L
+            every { householdRepository.findUserByChatId(chatId) } returns null
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(200L, 201L)
+
+            feed(textUpdate(chatId, "Создать таблицу", messageId = 1))
+            feed(textUpdate(chatId, "   ", messageId = 2, replyTo = botReplyPrompt(200)))
+
+            verify(exactly = 0) { createHouseholdUseCase.create(any(), any()) }
+            // start + empty-sheet re-prompt = 2 sends
+            verify(exactly = 2) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = any()) }
+        }
+
+        @Test
+        fun `raw sheet id is passed to the use case verbatim on Created result`() {
+            val chatId = 7004L
+            val householdId = UUID.randomUUID()
+            every { householdRepository.findUserByChatId(chatId) } returns null
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(200L, 201L)
+            every { createHouseholdUseCase.create(chatId, "raw-sheet-id") } returns
+                CreateHouseholdUseCase.Result.Created(household(householdId), botUser(chatId, householdId))
+
+            feed(textUpdate(chatId, "Создать таблицу", messageId = 1))
+            feed(textUpdate(chatId, "raw-sheet-id", messageId = 2, replyTo = botReplyPrompt(200)))
+
+            verify(exactly = 1) { createHouseholdUseCase.create(chatId, "raw-sheet-id") }
+        }
+
+        @Test
+        fun `full google sheets url is parsed and only the id is passed to the use case`() {
+            val chatId = 7005L
+            val householdId = UUID.randomUUID()
+            every { householdRepository.findUserByChatId(chatId) } returns null
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(200L, 201L)
+            every { createHouseholdUseCase.create(chatId, "1AbC_defGhi-jkl") } returns
+                CreateHouseholdUseCase.Result.Created(household(householdId), botUser(chatId, householdId))
+
+            feed(textUpdate(chatId, "Создать таблицу", messageId = 1))
+            feed(
+                textUpdate(
+                    chatId,
+                    "https://docs.google.com/spreadsheets/d/1AbC_defGhi-jkl/edit#gid=0",
+                    messageId = 2,
+                    replyTo = botReplyPrompt(200),
+                ),
+            )
+
+            verify(exactly = 1) { createHouseholdUseCase.create(chatId, "1AbC_defGhi-jkl") }
+        }
+
+        @Test
+        fun `AlreadyInHousehold result clears state and sends the alreadyInHousehold reply`() {
+            val chatId = 7006L
+            every { householdRepository.findUserByChatId(chatId) } returns null
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(200L, 201L, 202L)
+            every { createHouseholdUseCase.create(chatId, "sheet-x") } returns CreateHouseholdUseCase.Result.AlreadyInHousehold
+
+            feed(textUpdate(chatId, "Создать таблицу", messageId = 1))
+            feed(textUpdate(chatId, "sheet-x", messageId = 2, replyTo = botReplyPrompt(200)))
+
+            verify(exactly = 1) { createHouseholdUseCase.create(chatId, "sheet-x") }
+
+            // State cleared: another reply to promptId=200 is not re-treated as a step (no second use-case call).
+            feed(textUpdate(chatId, "sheet-y", messageId = 3, replyTo = botReplyPrompt(200)))
+            verify(exactly = 1) { createHouseholdUseCase.create(any(), any()) }
+        }
+
+        @Test
+        fun `use case exception clears state and sends the failure reply`() {
+            val chatId = 7007L
+            every { householdRepository.findUserByChatId(chatId) } returns null
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(200L, 201L, 202L)
+            every { createHouseholdUseCase.create(chatId, "sheet-x") } throws
+                RuntimeException("Sheets permission denied")
+
+            feed(textUpdate(chatId, "Создать таблицу", messageId = 1))
+            feed(textUpdate(chatId, "sheet-x", messageId = 2, replyTo = botReplyPrompt(200)))
+
+            verify(exactly = 1) { createHouseholdUseCase.create(chatId, "sheet-x") }
+
+            // State cleared after the exception — further replies to the same prompt id are ignored.
+            feed(textUpdate(chatId, "sheet-y", messageId = 3, replyTo = botReplyPrompt(200)))
+            verify(exactly = 1) { createHouseholdUseCase.create(any(), any()) }
+        }
+
+        @Test
+        fun `cancel text as reply to current sheet-id prompt is treated as a sheet id (quirk — step-check wins over cancel-check in this flow)`() {
+            // Unlike AddCategory (where cancel-check runs first), CreateHousehold's router checks the
+            // step branch first (see handleUpdate: lines around 163-166 vs 168-174). So "Забей" replied
+            // to the *current* prompt reaches handleCreateHouseholdStep and is passed to the use case
+            // as the sheet id. If this ever changes, this test will flag it — decide whether the new
+            // behaviour is intended.
+            val chatId = 7008L
+            val householdId = UUID.randomUUID()
+            every { householdRepository.findUserByChatId(chatId) } returns null
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(200L, 201L)
+            every { createHouseholdUseCase.create(chatId, "Забей") } returns CreateHouseholdUseCase.Result.AlreadyInHousehold
+
+            feed(textUpdate(chatId, "Создать таблицу", messageId = 1))
+            feed(textUpdate(chatId, "Забей", messageId = 2, replyTo = botReplyPrompt(200)))
+
+            verify(exactly = 1) { createHouseholdUseCase.create(chatId, "Забей") }
+        }
+
+        @Test
+        fun `cancel text as reply to a DIFFERENT (older) bot message clears state without touching the use case`() {
+            // The cancel-check requires replyTo to be a bot message AND its messageId to NOT match the
+            // current prompt id (so the step-check doesn't intercept). Simulate replying to an older
+            // bot message id 199 while the current wizard prompt is 200.
+            val chatId = 7009L
+            every { householdRepository.findUserByChatId(chatId) } returns null
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(200L, 201L, 202L)
+
+            feed(textUpdate(chatId, "Создать таблицу", messageId = 1))
+            feed(textUpdate(chatId, "Забей", messageId = 2, replyTo = botReplyPrompt(199)))
+
+            verify(exactly = 0) { createHouseholdUseCase.create(any(), any()) }
+
+            // State is now cleared — subsequent reply to current prompt id 200 is no longer a step.
+            feed(textUpdate(chatId, "sheet-x", messageId = 3, replyTo = botReplyPrompt(200)))
+            verify(exactly = 0) { createHouseholdUseCase.create(any(), any()) }
+        }
+    }
+
     // ── fixtures ──
 
     private fun request(
