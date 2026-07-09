@@ -28,6 +28,10 @@ import MailAggregator.MailAggregator.spreadsheet.Authentication
 import MailAggregator.MailAggregator.telegram.model.CategorizationRequest
 import MailAggregator.MailAggregator.telegram.repository.TelegramLogMessageRepository
 import MailAggregator.MailAggregator.telegram.repository.jpa.TelegramLogMessageJpaEntity
+import MailAggregator.MailAggregator.telegram.wizard.AddCardWizard
+import MailAggregator.MailAggregator.telegram.wizard.AddCategoryWizard
+import MailAggregator.MailAggregator.telegram.wizard.CashEntryWizard
+import MailAggregator.MailAggregator.telegram.wizard.CreateHouseholdWizard
 import com.pengrad.telegrambot.model.CallbackQuery
 import com.pengrad.telegrambot.model.Message
 import com.pengrad.telegrambot.model.Update
@@ -85,29 +89,68 @@ class CategorizationBotTest {
             category(UUID.randomUUID(), "Other").copy(isOther = true, sheetRow = 999),
         )
         every { gateway.start(capture(onUpdateSlot)) } just Runs
+
         bot = CategorizationBot(
             gateway = gateway,
             categoryRepository = categoryRepository,
+            householdRepository = householdRepository,
+            telegramLogMessageRepository = telegramLogMessageRepository,
+            messageSource = messageSource,
+            zoneId = zoneId,
+        )
+        val cashEntryWizard = CashEntryWizard(
+            gateway = gateway,
+            addCashTransactionUseCase = addCashTransactionUseCase,
+            messageSource = messageSource,
+            zoneId = zoneId,
+            broadcastTx = bot::sendTx,
+        )
+        val createHouseholdWizard = CreateHouseholdWizard(
+            gateway = gateway,
+            householdRepository = householdRepository,
+            createHouseholdUseCase = createHouseholdUseCase,
+            authentication = authentication,
+            messageSource = messageSource,
+        )
+        val addCategoryWizard = AddCategoryWizard(
+            gateway = gateway,
+            categoryRepository = categoryRepository,
             addCategoryUseCase = addCategoryUseCase,
+            householdRepository = householdRepository,
+            messageSource = messageSource,
+        )
+        val addCardWizard = AddCardWizard(
+            gateway = gateway,
+            addBankAccountUseCase = addBankAccountUseCase,
+            monobankApi = monobankApi,
+            householdRepository = householdRepository,
+            messageSource = messageSource,
+            ingestEmail = "aggregator@example.com",
+        )
+        val plainCommands = PlainCommandHandler(
+            gateway = gateway,
             transactionRepository = transactionRepository,
+            transactionStatusRepository = transactionStatusRepository,
             telegramLogMessageRepository = telegramLogMessageRepository,
             handleTelegramCommentUseCase = handleTelegramCommentUseCase,
             saveKeywordUseCase = saveKeywordUseCase,
-            transactionStatusRepository = transactionStatusRepository,
+            categoryRepository = categoryRepository,
             householdRepository = householdRepository,
-            createHouseholdUseCase = createHouseholdUseCase,
-            joinHouseholdUseCase = joinHouseholdUseCase,
-            addBankAccountUseCase = addBankAccountUseCase,
-            addCashTransactionUseCase = addCashTransactionUseCase,
             inviteTokenRepository = inviteTokenRepository,
-            authentication = authentication,
-            monobankApi = monobankApi,
-            ingestEmail = "aggregator@example.com",
+            joinHouseholdUseCase = joinHouseholdUseCase,
             messageSource = messageSource,
-            zoneId = zoneId,
             onDecision = onDecision,
+            sendLog = bot::sendLog,
         )
-        bot.startLongPolling() // registers the onUpdate lambda with the gateway (captured into onUpdateSlot)
+        val router = UpdateRouter(
+            gateway = gateway,
+            householdRepository = householdRepository,
+            plainCommands = plainCommands,
+            publicWizards = listOf(createHouseholdWizard),
+            registeredWizards = listOf(addCategoryWizard, addCardWizard, cashEntryWizard),
+            messageSource = messageSource,
+        )
+        router.startLongPolling() // registers the onUpdate lambda with the gateway (captured into onUpdateSlot)
     }
 
     /** Deliver an Update to the bot via the captured long-polling callback. */
