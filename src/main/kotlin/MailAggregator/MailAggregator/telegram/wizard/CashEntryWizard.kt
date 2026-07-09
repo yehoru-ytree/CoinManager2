@@ -22,8 +22,8 @@ class CashEntryWizard(
 
     private val states = ConcurrentHashMap<Long, State>()
 
-    private val cashTrigger: String by lazy { t("trigger.cash") }
-    private val cancelTrigger: String by lazy { t("trigger.cancel") }
+    private val cashTrigger: String by lazy { translate("trigger.cash") }
+    private val cancelTrigger: String by lazy { translate("trigger.cancel") }
 
     override fun hasState(chatId: Long): Boolean = states.containsKey(chatId)
 
@@ -36,7 +36,7 @@ class CashEntryWizard(
         // Cancel: reply to any bot message with the cancel trigger.
         if (replyTo.from()?.isBot == true && context.text.trim().equals(cancelTrigger, ignoreCase = true)) {
             states.remove(context.chatId)
-            reply(context.msg, t("flow.cancelled"))
+            reply(context.msg, translate("flow.cancelled"))
             return true
         }
 
@@ -55,7 +55,7 @@ class CashEntryWizard(
             context.text.trim().equals(cashTrigger, ignoreCase = true)
 
     override fun start(context: MessageContext) {
-        val promptId = reply(context.msg, t("cash.start", cancelTrigger)) ?: return
+        val promptId = reply(context.msg, translate("cash.start", cancelTrigger)) ?: return
         states[context.chatId] = State.AwaitingAmount(promptId)
     }
 
@@ -64,7 +64,7 @@ class CashEntryWizard(
     private fun handleAmountStep(chatId: Long, msg: Message, rawText: String, household: Household) {
         val amount = parseAmount(rawText)
         if (amount == null) {
-            val promptId = reply(msg, t("cash.badAmount")) ?: return
+            val promptId = reply(msg, translate("cash.badAmount")) ?: return
             states[chatId] = State.AwaitingAmount(promptId)
             return
         }
@@ -73,7 +73,7 @@ class CashEntryWizard(
         } catch (e: Exception) {
             println("Failed to add cash transaction for chat $chatId: ${e.message}")
             states.remove(chatId)
-            reply(msg, t("cash.failed", e.message ?: ""))
+            reply(msg, translate("cash.failed", e.message ?: ""))
             return
         }
         states.remove(chatId)
@@ -101,7 +101,7 @@ class CashEntryWizard(
     private fun reply(msg: Message, text: String): Int? =
         gateway.send(msg.chat().id(), text, replyToMessageId = msg.messageId())?.toInt()
 
-    private fun t(code: String, vararg args: Any?): String {
+    private fun translate(code: String, vararg args: Any?): String {
         val stringArgs: Array<Any?> = Array(args.size) { args[it]?.toString() }
         return messageSource.getMessage(code, stringArgs, Locale.ROOT)
     }

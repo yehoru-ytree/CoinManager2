@@ -21,12 +21,12 @@ class AddCategoryWizard(
 
     private val states = ConcurrentHashMap<Long, State>()
 
-    private val addCategoryTrigger: String by lazy { t("trigger.addCategory") }
-    private val cancelTrigger: String by lazy { t("trigger.cancel") }
-    private val emptyKeywordsTrigger: String by lazy { t("trigger.emptyKeywords") }
-    private val namePattern: Regex by lazy { Regex(t("validation.namePattern")) }
-    private val priorityMin: Int by lazy { t("validation.priority.min").toInt() }
-    private val priorityMax: Int by lazy { t("validation.priority.max").toInt() }
+    private val addCategoryTrigger: String by lazy { translate("trigger.addCategory") }
+    private val cancelTrigger: String by lazy { translate("trigger.cancel") }
+    private val emptyKeywordsTrigger: String by lazy { translate("trigger.emptyKeywords") }
+    private val namePattern: Regex by lazy { Regex(translate("validation.namePattern")) }
+    private val priorityMin: Int by lazy { translate("validation.priority.min").toInt() }
+    private val priorityMax: Int by lazy { translate("validation.priority.max").toInt() }
 
     override fun hasState(chatId: Long): Boolean = states.containsKey(chatId)
 
@@ -55,7 +55,7 @@ class AddCategoryWizard(
             context.text.trim().equals(addCategoryTrigger, ignoreCase = true)
 
     override fun start(context: MessageContext) {
-        val promptId = reply(context.msg, t("addCategory.start", cancelTrigger)) ?: return
+        val promptId = reply(context.msg, translate("addCategory.start", cancelTrigger)) ?: return
         states[context.chatId] = State.AwaitingName(promptId)
     }
 
@@ -72,37 +72,37 @@ class AddCategoryWizard(
 
     private fun handleNameStep(chatId: Long, msg: Message, name: String, household: Household) {
         if (!name.matches(namePattern)) {
-            val promptId = reply(msg, t("addCategory.name.bad")) ?: return
+            val promptId = reply(msg, translate("addCategory.name.bad")) ?: return
             states[chatId] = State.AwaitingName(promptId)
             return
         }
         if (categoryRepository.findByName(household.id, name) != null) {
-            val promptId = reply(msg, t("addCategory.name.exists", name)) ?: return
+            val promptId = reply(msg, translate("addCategory.name.exists", name)) ?: return
             states[chatId] = State.AwaitingName(promptId)
             return
         }
-        val promptId = reply(msg, t("addCategory.displayName.prompt")) ?: return
+        val promptId = reply(msg, translate("addCategory.displayName.prompt")) ?: return
         states[chatId] = State.AwaitingDisplayName(promptId, name)
     }
 
     private fun handleDisplayNameStep(chatId: Long, msg: Message, displayName: String, prev: State.AwaitingDisplayName) {
         if (displayName.isEmpty()) {
-            val promptId = reply(msg, t("addCategory.displayName.empty")) ?: return
+            val promptId = reply(msg, translate("addCategory.displayName.empty")) ?: return
             states[chatId] = prev.copy(lastPromptMessageId = promptId)
             return
         }
-        val promptId = reply(msg, t("addCategory.priority.prompt", priorityMin, priorityMax)) ?: return
+        val promptId = reply(msg, translate("addCategory.priority.prompt", priorityMin, priorityMax)) ?: return
         states[chatId] = State.AwaitingPriority(promptId, prev.name, displayName)
     }
 
     private fun handlePriorityStep(chatId: Long, msg: Message, priorityRaw: String, prev: State.AwaitingPriority) {
         val priority = priorityRaw.toIntOrNull()
         if (priority == null || priority !in priorityMin..priorityMax) {
-            val promptId = reply(msg, t("addCategory.priority.bad", priorityMin, priorityMax)) ?: return
+            val promptId = reply(msg, translate("addCategory.priority.bad", priorityMin, priorityMax)) ?: return
             states[chatId] = prev.copy(lastPromptMessageId = promptId)
             return
         }
-        val promptId = reply(msg, t("addCategory.keywords.prompt", emptyKeywordsTrigger)) ?: return
+        val promptId = reply(msg, translate("addCategory.keywords.prompt", emptyKeywordsTrigger)) ?: return
         states[chatId] = State.AwaitingKeywords(promptId, prev.name, prev.displayName, priority)
     }
 
@@ -129,15 +129,15 @@ class AddCategoryWizard(
         } catch (e: Exception) {
             println("Failed to add category ${prev.name}: ${e.message}")
             states.remove(chatId)
-            reply(msg, t("addCategory.createFailed", e.message ?: ""))
+            reply(msg, translate("addCategory.createFailed", e.message ?: ""))
             return
         }
         states.remove(chatId)
-        reply(msg, t("addCategory.created", category.name, category.displayName, category.sheetRow))
+        reply(msg, translate("addCategory.created", category.name, category.displayName, category.sheetRow))
         broadcastInfo(
             household.id,
             excludeChatId = chatId,
-            text = t("addCategory.broadcast", displayNameOf(msg), category.displayName),
+            text = translate("addCategory.broadcast", displayNameOf(msg), category.displayName),
         )
     }
 
@@ -157,13 +157,13 @@ class AddCategoryWizard(
         val user = msg.from()
         return user?.firstName()?.takeIf { it.isNotBlank() }
             ?: user?.username()?.takeIf { it.isNotBlank() }
-            ?: t("displayName.unknown")
+            ?: translate("displayName.unknown")
     }
 
     private fun reply(msg: Message, text: String): Int? =
         gateway.send(msg.chat().id(), text, replyToMessageId = msg.messageId())?.toInt()
 
-    private fun t(code: String, vararg args: Any?): String {
+    private fun translate(code: String, vararg args: Any?): String {
         val stringArgs: Array<Any?> = Array(args.size) { args[it]?.toString() }
         return messageSource.getMessage(code, stringArgs, Locale.ROOT)
     }

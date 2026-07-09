@@ -19,9 +19,9 @@ class CreateHouseholdWizard(
 
     private val states = ConcurrentHashMap<Long, State>()
 
-    private val createHouseholdTrigger: String by lazy { t("trigger.createHousehold") }
-    private val cancelTrigger: String by lazy { t("trigger.cancel") }
-    private val addCardTrigger: String by lazy { t("trigger.addCard") }
+    private val createHouseholdTrigger: String by lazy { translate("trigger.createHousehold") }
+    private val cancelTrigger: String by lazy { translate("trigger.cancel") }
+    private val addCardTrigger: String by lazy { translate("trigger.addCard") }
 
     override fun hasState(chatId: Long): Boolean = states.containsKey(chatId)
 
@@ -35,7 +35,7 @@ class CreateHouseholdWizard(
         // prompt must abort the wizard, not be parsed as a sheet id (matches AddCategory / AddCard).
         if (replyTo.from()?.isBot == true && context.text.trim().equals(cancelTrigger, ignoreCase = true)) {
             states.remove(context.chatId)
-            reply(context.msg, t("flow.cancelled"))
+            reply(context.msg, translate("flow.cancelled"))
             return true
         }
         if (replyTo.messageId() == state.lastPromptMessageId) {
@@ -51,12 +51,12 @@ class CreateHouseholdWizard(
 
     override fun start(context: MessageContext) {
         if (householdRepository.findUserByChatId(context.chatId) != null) {
-            reply(context.msg, t("flow.alreadyInHousehold"))
+            reply(context.msg, translate("flow.alreadyInHousehold"))
             return
         }
         val promptId = reply(
             context.msg,
-            t("createHousehold.start", cancelTrigger, authentication.serviceAccountEmail),
+            translate("createHousehold.start", cancelTrigger, authentication.serviceAccountEmail),
         ) ?: return
         states[context.chatId] = State.AwaitingSheetId(promptId)
     }
@@ -68,7 +68,7 @@ class CreateHouseholdWizard(
         when (state) {
             is State.AwaitingSheetId -> {
                 if (text.isEmpty()) {
-                    val promptId = reply(msg, t("createHousehold.emptySheetId")) ?: return
+                    val promptId = reply(msg, translate("createHousehold.emptySheetId")) ?: return
                     states[chatId] = State.AwaitingSheetId(promptId)
                     return
                 }
@@ -78,16 +78,16 @@ class CreateHouseholdWizard(
                 } catch (e: Exception) {
                     println("Failed to create household for chat $chatId: ${e.message}")
                     states.remove(chatId)
-                    reply(msg, t("createHousehold.failed", e.message ?: ""))
+                    reply(msg, translate("createHousehold.failed", e.message ?: ""))
                     return
                 }
                 states.remove(chatId)
                 when (result) {
                     is CreateHouseholdUseCase.Result.Created -> reply(
                         msg,
-                        t("createHousehold.success", addCardTrigger, authentication.serviceAccountEmail),
+                        translate("createHousehold.success", addCardTrigger, authentication.serviceAccountEmail),
                     )
-                    CreateHouseholdUseCase.Result.AlreadyInHousehold -> reply(msg, t("flow.alreadyInHousehold"))
+                    CreateHouseholdUseCase.Result.AlreadyInHousehold -> reply(msg, translate("flow.alreadyInHousehold"))
                 }
             }
         }
@@ -99,7 +99,7 @@ class CreateHouseholdWizard(
     private fun reply(msg: Message, text: String): Int? =
         gateway.send(msg.chat().id(), text, replyToMessageId = msg.messageId())?.toInt()
 
-    private fun t(code: String, vararg args: Any?): String {
+    private fun translate(code: String, vararg args: Any?): String {
         val stringArgs: Array<Any?> = Array(args.size) { args[it]?.toString() }
         return messageSource.getMessage(code, stringArgs, Locale.ROOT)
     }

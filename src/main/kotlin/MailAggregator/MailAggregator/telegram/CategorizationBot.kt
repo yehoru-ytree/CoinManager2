@@ -42,7 +42,7 @@ class CategorizationBot(
     }
 
     fun sendTx(transaction: CategorizationRequest) {
-        val text = t(
+        val text = translate(
             "tx.prompt",
             transaction.description,
             transaction.transactionId,
@@ -70,11 +70,11 @@ class CategorizationBot(
         val time = zoned.format(TIME_FORMAT)
         val amount = "%.2f".format(-transaction.amount.toDouble() / 100.0)
         val currency = currencyCode(transaction.currencyCode)
-        val tail = category?.let { t("log.tail.category", it.displayName) } ?: t("log.tail.ignored")
+        val tail = category?.let { translate("log.tail.category", it.displayName) } ?: translate("log.tail.ignored")
 
         val text = buildString {
-            appendLine(t("log.title", transaction.description))
-            appendLine(t("log.body", date, time, amount, currency))
+            appendLine(translate("log.title", transaction.description))
+            appendLine(translate("log.body", date, time, amount, currency))
             append(tail)
         }
 
@@ -93,7 +93,7 @@ class CategorizationBot(
         }
     }
 
-    private fun t(code: String, vararg args: Any?): String {
+    private fun translate(code: String, vararg args: Any?): String {
         val stringArgs: Array<Any?> = Array(args.size) { args[it]?.toString() }
         return messageSource.getMessage(code, stringArgs, Locale.ROOT)
     }
@@ -110,8 +110,8 @@ class CategorizationBot(
             }.toTypedArray()
         }
         rows += arrayOf(
-            InlineKeyboardButton(t("keyboard.ignore")).callbackData("c|$transactionId|-1"),
-            InlineKeyboardButton(t("keyboard.other")).callbackData("c|$transactionId|${other.sheetRow}"),
+            InlineKeyboardButton(translate("keyboard.ignore")).callbackData("c|$transactionId|-1"),
+            InlineKeyboardButton(translate("keyboard.other")).callbackData("c|$transactionId|${other.sheetRow}"),
         )
         return InlineKeyboardMarkup(*rows.toTypedArray())
     }
