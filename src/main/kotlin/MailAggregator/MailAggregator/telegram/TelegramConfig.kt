@@ -34,7 +34,7 @@ class TelegramConfig {
         @Value("\${telegram.bot-token}") botToken: String,
     ): TelegramGateway = PengradTelegramGateway(botToken)
 
-    // The bot itself only holds the broadcast surface (sendTx / sendLog / notifyChat).
+    // The bot itself only holds the broadcast surface (promptHousehold / notifyHousehold / notifyUser).
     // Wizards + PlainCommandHandler + UpdateRouter reference bot's broadcast methods via
     // constructor lambdas, so they must be created *after* it — Spring resolves that ordering.
     @Bean
@@ -63,7 +63,7 @@ class TelegramConfig {
         addCashTransactionUseCase = addCashTransactionUseCase,
         messageSource = messageSource,
         zoneId = Config.TIME_ZONE,
-        broadcastTx = categorizationBot::sendTx,
+        promptHousehold = categorizationBot::promptHousehold,
     )
 
     @Bean
@@ -143,7 +143,7 @@ class TelegramConfig {
         onDecision = { transactionId, decision ->
             handleTelegramResponseUseCase(transactionId, decision)
         },
-        sendLog = categorizationBot::sendLog,
+        notifyHousehold = categorizationBot::notifyHousehold,
     )
 
     @Bean

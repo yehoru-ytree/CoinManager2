@@ -14,7 +14,7 @@ class HandleOtherExpensesUseCase(
 ) {
     operator fun invoke(uncategorizedTransactions: List<Transaction>) {
         for (transaction in uncategorizedTransactions) {
-            telegramBot.sendTx(
+            telegramBot.promptHousehold(
                 CategorizationRequest(
                     transactionId = transaction.id,
                     householdId = transaction.householdId,

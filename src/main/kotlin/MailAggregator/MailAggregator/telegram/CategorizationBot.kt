@@ -18,8 +18,8 @@ import java.util.Locale
 import java.util.UUID
 
 /**
- * Public bot surface: two broadcasts ([sendTx] / [sendLog]) that fan messages out to household
- * members, plus a plain [notifyChat] DM used by the email ingestor to relay Gmail-forwarding
+ * Public bot surface: two broadcasts ([promptHousehold] / [notifyHousehold]) that fan messages out to household
+ * members, plus a plain [notifyUser] DM used by the email ingestor to relay Gmail-forwarding
  * verification codes to a specific chat without going through the keyword/category pipeline.
  *
  * Routing (Wizards, PlainCommandHandler, transaction-callback handling) lives in [UpdateRouter];
@@ -37,11 +37,11 @@ class CategorizationBot(
 
     /** Plain DM to a single chat — used by the email ingestor to relay Gmail forwarding
      *  verification codes to the user without going through the keyword/category pipeline. */
-    fun notifyChat(chatId: Long, text: String) {
+    fun notifyUser(chatId: Long, text: String) {
         gateway.send(chatId, text)
     }
 
-    fun sendTx(transaction: CategorizationRequest) {
+    fun promptHousehold(transaction: CategorizationRequest) {
         val text = applyLocale(
             "tx.prompt",
             transaction.description,
@@ -64,7 +64,7 @@ class CategorizationBot(
         }
     }
 
-    fun sendLog(household: Household, transaction: Transaction, category: Category?) {
+    fun notifyHousehold(household: Household, transaction: Transaction, category: Category?) {
         val zoned = Instant.ofEpochSecond(transaction.time).atZone(zoneId)
         val date = zoned.format(DATE_FORMAT)
         val time = zoned.format(TIME_FORMAT)
@@ -78,7 +78,7 @@ class CategorizationBot(
             append(tail)
         }
 
-        // For manually categorised tx the prompt with the keyboard was sent first (by sendTx) and
+        // For manually categorised tx the prompt with the keyboard was sent first (by promptHousehold) and
         // recorded here. Thread the log under each user's copy of that prompt so the chat keeps a
         // visual «question → answer» history. Auto-categorised transactions have no prior prompt;
         // those rows just don't exist yet and the log goes out as a fresh message.

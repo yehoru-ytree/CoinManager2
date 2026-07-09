@@ -103,7 +103,7 @@ class CategorizationBotTest {
             addCashTransactionUseCase = addCashTransactionUseCase,
             messageSource = messageSource,
             zoneId = zoneId,
-            broadcastTx = bot::sendTx,
+            promptHousehold = bot::promptHousehold,
         )
         val createHouseholdWizard = CreateHouseholdWizard(
             gateway = gateway,
@@ -140,7 +140,7 @@ class CategorizationBotTest {
             joinHouseholdUseCase = joinHouseholdUseCase,
             messageSource = messageSource,
             onDecision = onDecision,
-            sendLog = bot::sendLog,
+            notifyHousehold = bot::notifyHousehold,
         )
         val router = UpdateRouter(
             gateway = gateway,
@@ -172,7 +172,7 @@ class CategorizationBotTest {
             every { gateway.send(222L, any(), any(), any()) } returns 1002L
 
             // When
-            bot.sendTx(request(txId = "tx-1", householdId = householdId))
+            bot.promptHousehold(request(txId = "tx-1", householdId = householdId))
 
             // Then: each user got a message with a keyboard, no reply-to, and its id was persisted
             verify(exactly = 1) {
@@ -206,7 +206,7 @@ class CategorizationBotTest {
             every { gateway.send(222L, any(), any(), any()) } returns null
 
             // When
-            bot.sendTx(request(txId = "tx-2", householdId = householdId))
+            bot.promptHousehold(request(txId = "tx-2", householdId = householdId))
 
             // Then: only the successful send persisted; the failed one was silently skipped
             verify(exactly = 1) { telegramLogMessageRepository.save(householdId, 111L, 1001L, "tx-2") }
@@ -220,7 +220,7 @@ class CategorizationBotTest {
             every { householdRepository.findUsersInHousehold(householdId) } returns emptyList()
 
             // When
-            bot.sendTx(request(txId = "tx-3", householdId = householdId))
+            bot.promptHousehold(request(txId = "tx-3", householdId = householdId))
 
             // Then: no outbound calls at all
             verify(exactly = 0) { gateway.send(any(), any(), any(), any()) }
@@ -248,7 +248,7 @@ class CategorizationBotTest {
             every { gateway.send(222L, any(), any(), 600) } returns 1102L
 
             // When
-            bot.sendLog(household, transaction, category)
+            bot.notifyHousehold(household, transaction, category)
 
             // Then: each user got a log threaded under their own prior prompt; each new id persisted
             verify(exactly = 1) { gateway.send(chatId = 111L, text = any(), keyboard = null, replyToMessageId = 500) }
@@ -269,7 +269,7 @@ class CategorizationBotTest {
             every { gateway.send(111L, any(), any(), null) } returns 1105L
 
             // When
-            bot.sendLog(household, transaction, category = null)
+            bot.notifyHousehold(household, transaction, category = null)
 
             // Then: no replyToMessageId used, still persisted
             verify(exactly = 1) { gateway.send(chatId = 111L, text = any(), keyboard = null, replyToMessageId = null) }
@@ -291,7 +291,7 @@ class CategorizationBotTest {
             every { gateway.send(222L, any(), any(), null) } returns null
 
             // When
-            bot.sendLog(household, transaction, category)
+            bot.notifyHousehold(household, transaction, category)
 
             // Then: only the successful send is persisted
             verify(exactly = 1) { telegramLogMessageRepository.save(householdId, 111L, 1106L, "tx-6") }
@@ -1134,7 +1134,7 @@ class CategorizationBotTest {
             val chatId = 9005L
             val (_, household) = registerUser(chatId)
             every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(400L, 401L)
-            every { householdRepository.findUsersInHousehold(household.id) } returns emptyList() // sendTx side-effect no-op
+            every { householdRepository.findUsersInHousehold(household.id) } returns emptyList() // promptHousehold side-effect no-op
             every { addCashTransactionUseCase.add(household.id, 50.25) } returns tx(id = "cash-1", householdId = household.id)
 
             feed(textUpdate(chatId, "Наличка", messageId = 1))
@@ -1237,7 +1237,7 @@ class CategorizationBotTest {
                 logRow(household.id, chatId = chatId, messageId = 500L, transactionId = "tx-A"),
                 logRow(household.id, chatId = 10099L, messageId = 501L, transactionId = "tx-A"),
             )
-            // sendLogForDecision path
+            // notifyDecision path
             every { transactionRepository.get("tx-A") } returns Optional.of(tx)
             every { householdRepository.findHousehold(household.id) } returns household
             every { householdRepository.findUsersInHousehold(household.id) } returns emptyList()

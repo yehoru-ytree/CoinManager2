@@ -184,7 +184,7 @@ class PrivatEmailIngestor(
         }
 
         try {
-            categorizationBot.notifyChat(
+            categorizationBot.notifyUser(
                 user.chatId,
                 "Gmail прислал ссылку для подтверждения forwarding-адреса. " +
                     "Открой её в браузере, где ты залогинен в свой Gmail (форвардинг включится автоматически):\n\n" +
