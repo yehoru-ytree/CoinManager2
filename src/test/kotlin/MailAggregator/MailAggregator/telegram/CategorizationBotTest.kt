@@ -1031,6 +1031,143 @@ class CategorizationBotTest {
         }
     }
 
+    @Nested
+    inner class CashEntryWizard {
+
+        @Test
+        fun `trigger asks for amount and saves AwaitingAmount state`() {
+            val chatId = 9001L
+            registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returns 400L
+
+            feed(textUpdate(chatId, "Наличка", messageId = 1))
+
+            verify(exactly = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = 1) }
+            verify(exactly = 0) { addCashTransactionUseCase.add(any(), any()) }
+        }
+
+        @Test
+        fun `non-numeric amount re-prompts, stays in AwaitingAmount`() {
+            val chatId = 9002L
+            registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(400L, 401L)
+
+            feed(textUpdate(chatId, "Наличка", messageId = 1))
+            feed(textUpdate(chatId, "abc", messageId = 2, replyTo = botReplyPrompt(400)))
+
+            verify(exactly = 0) { addCashTransactionUseCase.add(any(), any()) }
+            // start + badAmount re-prompt = 2 sends
+            verify(exactly = 2) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = any()) }
+        }
+
+        @Test
+        fun `zero amount is treated as invalid and re-prompts`() {
+            val chatId = 9003L
+            registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(400L, 401L)
+
+            feed(textUpdate(chatId, "Наличка", messageId = 1))
+            feed(textUpdate(chatId, "0", messageId = 2, replyTo = botReplyPrompt(400)))
+
+            verify(exactly = 0) { addCashTransactionUseCase.add(any(), any()) }
+        }
+
+        @Test
+        fun `negative amount is treated as invalid and re-prompts`() {
+            val chatId = 9004L
+            registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(400L, 401L)
+
+            feed(textUpdate(chatId, "Наличка", messageId = 1))
+            feed(textUpdate(chatId, "-42.50", messageId = 2, replyTo = botReplyPrompt(400)))
+
+            verify(exactly = 0) { addCashTransactionUseCase.add(any(), any()) }
+        }
+
+        @Test
+        fun `comma-decimal amount is parsed as a dot-decimal and passed to the use case`() {
+            val chatId = 9005L
+            val (_, household) = registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(400L, 401L)
+            every { householdRepository.findUsersInHousehold(household.id) } returns emptyList() // sendTx side-effect no-op
+            every { addCashTransactionUseCase.add(household.id, 50.25) } returns tx(id = "cash-1", householdId = household.id)
+
+            feed(textUpdate(chatId, "Наличка", messageId = 1))
+            feed(textUpdate(chatId, "50,25", messageId = 2, replyTo = botReplyPrompt(400)))
+
+            verify(exactly = 1) { addCashTransactionUseCase.add(household.id, 50.25) }
+        }
+
+        @Test
+        fun `valid amount completes the wizard and broadcasts a categorisation prompt to all household users`() {
+            val chatId = 9006L
+            val (_, household) = registerUser(chatId)
+            val otherChatId = 9099L
+            // The user who typed /cash + one other household member.
+            every { householdRepository.findUsersInHousehold(household.id) } returns listOf(
+                botUser(chatId, household.id),
+                botUser(otherChatId, household.id),
+            )
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(400L, 401L, 500L)
+            every { gateway.send(chatId = otherChatId, text = any(), keyboard = any(), replyToMessageId = any()) } returns 501L
+            every { addCashTransactionUseCase.add(household.id, 42.0) } returns tx(id = "cash-2", householdId = household.id)
+
+            feed(textUpdate(chatId, "Наличка", messageId = 1))
+            feed(textUpdate(chatId, "42", messageId = 2, replyTo = botReplyPrompt(400)))
+
+            // Cash transaction persisted, then the categorisation prompt (keyboard!) fanned out to BOTH members.
+            verify(exactly = 1) { addCashTransactionUseCase.add(household.id, 42.0) }
+            verify(exactly = 1) {
+                gateway.send(
+                    chatId = chatId,
+                    text = any(),
+                    keyboard = match { it != null },
+                    replyToMessageId = null,
+                )
+            }
+            verify(exactly = 1) {
+                gateway.send(
+                    chatId = otherChatId,
+                    text = any(),
+                    keyboard = match { it != null },
+                    replyToMessageId = null,
+                )
+            }
+        }
+
+        @Test
+        fun `use case exception clears state and reports cash_failed`() {
+            val chatId = 9007L
+            val (_, household) = registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(400L, 401L, 402L)
+            every { addCashTransactionUseCase.add(household.id, 42.0) } throws IllegalStateException("db down")
+
+            feed(textUpdate(chatId, "Наличка", messageId = 1))
+            feed(textUpdate(chatId, "42", messageId = 2, replyTo = botReplyPrompt(400)))
+
+            verify(exactly = 1) { addCashTransactionUseCase.add(household.id, 42.0) }
+
+            // State cleared — a later reply to the same prompt id is not re-treated as a step.
+            feed(textUpdate(chatId, "100", messageId = 3, replyTo = botReplyPrompt(400)))
+            verify(exactly = 1) { addCashTransactionUseCase.add(any(), any()) }
+        }
+
+        @Test
+        fun `cancel mid-wizard clears state and skips the use case`() {
+            val chatId = 9008L
+            registerUser(chatId)
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(400L, 401L, 402L)
+
+            feed(textUpdate(chatId, "Наличка", messageId = 1))
+            feed(textUpdate(chatId, "Забей", messageId = 2, replyTo = botReplyPrompt(400)))
+
+            verify(exactly = 0) { addCashTransactionUseCase.add(any(), any()) }
+            // A subsequent reply to the same prompt id is ignored.
+            feed(textUpdate(chatId, "42", messageId = 3, replyTo = botReplyPrompt(400)))
+            verify(exactly = 0) { addCashTransactionUseCase.add(any(), any()) }
+        }
+    }
+
     // ── fixtures ──
 
     private fun request(
