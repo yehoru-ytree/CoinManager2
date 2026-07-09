@@ -66,6 +66,7 @@ dependencies {
     testImplementation("org.springframework.boot:spring-boot-starter-test") {
         exclude(group = "org.junit.vintage") // не нужен старый JUnit 4
     }
+    testImplementation("io.mockk:mockk:1.14.7")
 }
 
 

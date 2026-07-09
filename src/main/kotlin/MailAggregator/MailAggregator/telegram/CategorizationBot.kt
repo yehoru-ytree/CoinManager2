@@ -161,15 +161,18 @@ class CategorizationBot(
             // ===== Public commands (work for unregistered chats too) =====
 
             val createState = createHouseholdStates[chatId]
-            if (createState != null && replyTo != null && replyTo.messageId() == createState.lastPromptMessageId) {
-                handleCreateHouseholdStep(chatId, msg, text, createState)
-                return
-            }
+            // Cancel check must run BEFORE the step check: otherwise a "cancel" reply to the current
+            // prompt would fall into handleCreateHouseholdStep and be treated as user input (a sheet id).
+            // See the mirror ordering for AddCategory / AddCard / CashEntry wizards.
             if (createState != null && replyTo != null && replyTo.from()?.isBot == true &&
                 text.trim().equals(cancelTrigger, ignoreCase = true)
             ) {
                 createHouseholdStates.remove(chatId)
                 reply(msg, t("flow.cancelled"))
+                return
+            }
+            if (createState != null && replyTo != null && replyTo.messageId() == createState.lastPromptMessageId) {
+                handleCreateHouseholdStep(chatId, msg, text, createState)
                 return
             }
             if (replyTo == null && text.trim().equals(createHouseholdTrigger, ignoreCase = true)) {
