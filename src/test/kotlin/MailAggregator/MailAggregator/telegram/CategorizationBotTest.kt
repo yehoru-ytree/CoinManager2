@@ -3,6 +3,7 @@
 package MailAggregator.MailAggregator.telegram
 
 import MailAggregator.MailAggregator.bank.Transaction
+import MailAggregator.MailAggregator.bank.TransactionStatus
 import MailAggregator.MailAggregator.bank.repository.TransactionRepository
 import MailAggregator.MailAggregator.bank.repository.TransactionStatusRepository
 import MailAggregator.MailAggregator.common.Category
@@ -43,6 +44,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.ExtendWith
 import org.springframework.context.support.ResourceBundleMessageSource
 import java.time.ZoneId
+import java.util.Optional
 import java.util.UUID
 
 @ExtendWith(MockKExtension::class)
@@ -1165,6 +1167,304 @@ class CategorizationBotTest {
             // A subsequent reply to the same prompt id is ignored.
             feed(textUpdate(chatId, "42", messageId = 3, replyTo = botReplyPrompt(400)))
             verify(exactly = 0) { addCashTransactionUseCase.add(any(), any()) }
+        }
+    }
+
+    @Nested
+    inner class CategorisationCallback {
+
+        @Test
+        fun `malformed callback data replies with badCallback and does NOT invoke onDecision`() {
+            val chatId = 10001L
+            registerUser(chatId)
+
+            feed(callbackUpdate(chatId, data = "c|only-two-parts", attachedMessageId = 700))
+
+            verify(exactly = 1) { gateway.answerCallback("cb-700", any()) }
+            verify(exactly = 0) { onDecision(any(), any()) }
+        }
+
+        @Test
+        fun `sheet row = -1 dispatches Decision Ignore, clears keyboards on ALL household prompts, and sends the ignored log`() {
+            val chatId = 10002L
+            val (_, household) = registerUser(chatId)
+            val tx = tx(id = "tx-A", householdId = household.id)
+            every { transactionStatusRepository.findByTransactionId("tx-A") } returns null
+            every { telegramLogMessageRepository.findAllByTransactionId("tx-A") } returns listOf(
+                logRow(household.id, chatId = chatId, messageId = 500L, transactionId = "tx-A"),
+                logRow(household.id, chatId = 10099L, messageId = 501L, transactionId = "tx-A"),
+            )
+            // sendLogForDecision path
+            every { transactionRepository.get("tx-A") } returns Optional.of(tx)
+            every { householdRepository.findHousehold(household.id) } returns household
+            every { householdRepository.findUsersInHousehold(household.id) } returns emptyList()
+
+            feed(callbackUpdate(chatId, data = "c|tx-A|-1", attachedMessageId = 700))
+
+            verify(exactly = 1) { onDecision("tx-A", CategorizationBot.Decision.Ignore) }
+            verify(exactly = 1) { gateway.editKeyboard(chatId, 500L, null) }
+            verify(exactly = 1) { gateway.editKeyboard(10099L, 501L, null) }
+            verify(exactly = 1) { gateway.answerCallback("cb-700", any()) }
+        }
+
+        @Test
+        fun `valid sheet row dispatches Decision Category with the resolved categoryId`() {
+            val chatId = 10003L
+            val (_, household) = registerUser(chatId)
+            val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
+            every { transactionStatusRepository.findByTransactionId("tx-B") } returns null
+            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { telegramLogMessageRepository.findAllByTransactionId("tx-B") } returns emptyList()
+            every { transactionRepository.get("tx-B") } returns Optional.of(tx(id = "tx-B", householdId = household.id))
+            every { householdRepository.findHousehold(household.id) } returns household
+            every { householdRepository.findUsersInHousehold(household.id) } returns emptyList()
+
+            feed(callbackUpdate(chatId, data = "c|tx-B|7", attachedMessageId = 700))
+
+            verify(exactly = 1) { onDecision("tx-B", CategorizationBot.Decision.Category(chosen.id)) }
+        }
+
+        @Test
+        fun `unknown sheet row (category lookup returns null) replies with badCallback and skips onDecision`() {
+            val chatId = 10004L
+            val (_, household) = registerUser(chatId)
+            every { categoryRepository.findBySheetRow(household.id, 999) } returns null
+
+            feed(callbackUpdate(chatId, data = "c|tx-C|999", attachedMessageId = 700))
+
+            verify(exactly = 0) { onDecision(any(), any()) }
+            verify(exactly = 1) { gateway.answerCallback("cb-700", any()) }
+        }
+
+        @Test
+        fun `already EXECUTED transaction acks with alreadyDone, strips the tapper's keyboard, no onDecision`() {
+            val chatId = 10005L
+            val (_, household) = registerUser(chatId)
+            val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
+            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { transactionStatusRepository.findByTransactionId("tx-D") } returns TransactionStatus.EXECUTED
+
+            feed(callbackUpdate(chatId, data = "c|tx-D|7", attachedMessageId = 700))
+
+            verify(exactly = 0) { onDecision(any(), any()) }
+            verify(exactly = 1) { gateway.editKeyboard(chatId, 700L, null) }
+            verify(exactly = 1) { gateway.answerCallback("cb-700", any()) }
+        }
+
+        @Test
+        fun `already IGNORED transaction is also treated as final (no onDecision)`() {
+            val chatId = 10006L
+            val (_, household) = registerUser(chatId)
+            val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
+            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { transactionStatusRepository.findByTransactionId("tx-E") } returns TransactionStatus.IGNORED
+
+            feed(callbackUpdate(chatId, data = "c|tx-E|7", attachedMessageId = 700))
+
+            verify(exactly = 0) { onDecision(any(), any()) }
+        }
+
+        @Test
+        fun `callback from an unregistered chat is refused with notAllowed and never reaches the handler`() {
+            val chatId = 10007L
+            every { householdRepository.findUserByChatId(chatId) } returns null
+
+            feed(callbackUpdate(chatId, data = "c|tx-F|-1", attachedMessageId = 700))
+
+            verify(exactly = 1) { gateway.answerCallback("cb-700", any()) }
+            verify(exactly = 0) { onDecision(any(), any()) }
+        }
+    }
+
+    @Nested
+    inner class SaveKeywordCallback {
+
+        @Test
+        fun `malformed data replies with badCallback`() {
+            val chatId = 11001L
+            registerUser(chatId)
+
+            feed(callbackUpdate(chatId, data = "k|missing-row", attachedMessageId = 800))
+
+            verify(exactly = 1) { gateway.answerCallback("cb-800", any()) }
+            verify(exactly = 0) { saveKeywordUseCase(any(), any()) }
+        }
+
+        @Test
+        fun `unknown transaction id replies with txNotFound`() {
+            val chatId = 11002L
+            val (_, household) = registerUser(chatId)
+            val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
+            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { transactionRepository.get("tx-Z") } returns Optional.empty()
+
+            feed(callbackUpdate(chatId, data = "k|tx-Z|7", attachedMessageId = 800))
+
+            verify(exactly = 0) { saveKeywordUseCase(any(), any()) }
+            verify(exactly = 1) { gateway.answerCallback("cb-800", any()) }
+        }
+
+        @Test
+        fun `Saved result strips keyboard, acks with saved, and sends success message`() {
+            val chatId = 11003L
+            val (_, household) = registerUser(chatId)
+            val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
+            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { transactionRepository.get("tx-S") } returns Optional.of(tx(id = "tx-S", householdId = household.id, description = "Coffee shop"))
+            every { saveKeywordUseCase(chosen.id, "Coffee shop") } returns SaveKeywordUseCase.Result.Saved(chosen, "Coffee\\ shop")
+
+            feed(callbackUpdate(chatId, data = "k|tx-S|7", attachedMessageId = 800))
+
+            verify(exactly = 1) { saveKeywordUseCase(chosen.id, "Coffee shop") }
+            verify(exactly = 1) { gateway.editKeyboard(chatId, 800L, null) }
+            verify(exactly = 1) { gateway.answerCallback("cb-800", any()) }
+            // Follow-up plain message to the same chat confirming success.
+            verify(atLeast = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = null) }
+        }
+
+        @Test
+        fun `AlreadyPresent result acks with alreadyPresent and sends the notice`() {
+            val chatId = 11004L
+            val (_, household) = registerUser(chatId)
+            val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
+            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { transactionRepository.get("tx-P") } returns Optional.of(tx(id = "tx-P", householdId = household.id, description = "Coffee"))
+            every { saveKeywordUseCase(chosen.id, "Coffee") } returns SaveKeywordUseCase.Result.AlreadyPresent(chosen, "Coffee")
+
+            feed(callbackUpdate(chatId, data = "k|tx-P|7", attachedMessageId = 800))
+
+            verify(exactly = 1) { gateway.answerCallback("cb-800", any()) }
+            verify(atLeast = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = null) }
+        }
+
+        @Test
+        fun `CategoryNotFound result acks with categoryNotFound`() {
+            val chatId = 11005L
+            val (_, household) = registerUser(chatId)
+            val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
+            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { transactionRepository.get("tx-N") } returns Optional.of(tx(id = "tx-N", householdId = household.id, description = "d"))
+            every { saveKeywordUseCase(chosen.id, "d") } returns SaveKeywordUseCase.Result.CategoryNotFound
+
+            feed(callbackUpdate(chatId, data = "k|tx-N|7", attachedMessageId = 800))
+
+            verify(exactly = 1) { gateway.answerCallback("cb-800", any()) }
+        }
+
+        @Test
+        fun `EmptyKeyword result acks with empty`() {
+            val chatId = 11006L
+            val (_, household) = registerUser(chatId)
+            val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
+            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { transactionRepository.get("tx-M") } returns Optional.of(tx(id = "tx-M", householdId = household.id, description = ""))
+            every { saveKeywordUseCase(chosen.id, "") } returns SaveKeywordUseCase.Result.EmptyKeyword
+
+            feed(callbackUpdate(chatId, data = "k|tx-M|7", attachedMessageId = 800))
+
+            verify(exactly = 1) { gateway.answerCallback("cb-800", any()) }
+        }
+    }
+
+    @Nested
+    inner class CommentAndSaveKeywordReply {
+
+        @Test
+        fun `reply with comment text delegates to HandleTelegramCommentUseCase and confirms saved`() {
+            val chatId = 12001L
+            registerUser(chatId)
+            every { handleTelegramCommentUseCase(chatId, 500L, "great restaurant") } returns true
+
+            feed(textUpdate(chatId, "great restaurant", messageId = 30, replyTo = botReplyPrompt(500)))
+
+            verify(exactly = 1) { handleTelegramCommentUseCase(chatId, 500L, "great restaurant") }
+            verify(exactly = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = 30) }
+        }
+
+        @Test
+        fun `use case returning false triggers the not-found reply`() {
+            val chatId = 12002L
+            registerUser(chatId)
+            every { handleTelegramCommentUseCase(chatId, 500L, "orphan comment") } returns false
+
+            feed(textUpdate(chatId, "orphan comment", messageId = 31, replyTo = botReplyPrompt(500)))
+
+            verify(exactly = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = 31) }
+        }
+
+        @Test
+        fun `use case throwing triggers the save-error reply`() {
+            val chatId = 12003L
+            registerUser(chatId)
+            every { handleTelegramCommentUseCase(chatId, 500L, "boom") } throws RuntimeException("db down")
+
+            feed(textUpdate(chatId, "boom", messageId = 32, replyTo = botReplyPrompt(500)))
+
+            verify(exactly = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = 32) }
+        }
+
+        @Test
+        fun `saveKeyword trigger reply routes to promptSaveKeywordCategory and sends a category keyboard`() {
+            val chatId = 12004L
+            val (_, household) = registerUser(chatId)
+            val record = logRow(household.id, chatId = chatId, messageId = 500L, transactionId = "tx-K")
+            every { telegramLogMessageRepository.findByChatAndMessage(chatId, 500L) } returns record
+            every { transactionRepository.get("tx-K") } returns Optional.of(tx(id = "tx-K", householdId = household.id, description = "coffee house"))
+
+            feed(textUpdate(chatId, "Сохранить", messageId = 40, replyTo = botReplyPrompt(500)))
+
+            // Keyboard sent with the save-keyword category picker; comment use case NOT invoked (this is the trigger path).
+            verify(exactly = 0) { handleTelegramCommentUseCase(any(), any(), any()) }
+            verify(exactly = 1) {
+                gateway.send(
+                    chatId = chatId,
+                    text = any(),
+                    keyboard = match { it != null },
+                    replyToMessageId = null,
+                )
+            }
+        }
+
+        @Test
+        fun `saveKeyword trigger reply for an unknown message id sends txMissing`() {
+            val chatId = 12005L
+            registerUser(chatId)
+            every { telegramLogMessageRepository.findByChatAndMessage(chatId, 500L) } returns null
+
+            feed(textUpdate(chatId, "Сохранить", messageId = 41, replyTo = botReplyPrompt(500)))
+
+            // Plain (no-keyboard) notice; no category picker.
+            verify(exactly = 0) {
+                gateway.send(
+                    chatId = any(),
+                    text = any(),
+                    keyboard = match { it != null },
+                    replyToMessageId = any(),
+                )
+            }
+            verify(exactly = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = null) }
+        }
+
+        @Test
+        fun `saveKeyword trigger reply on a cash transaction is rejected`() {
+            val chatId = 12006L
+            val (_, household) = registerUser(chatId)
+            val record = logRow(household.id, chatId = chatId, messageId = 500L, transactionId = "cash-42")
+            every { telegramLogMessageRepository.findByChatAndMessage(chatId, 500L) } returns record
+            every { transactionRepository.get("cash-42") } returns Optional.of(tx(id = "cash-42", householdId = household.id, description = "Наличка"))
+
+            feed(textUpdate(chatId, "Сохранить", messageId = 42, replyTo = botReplyPrompt(500)))
+
+            // Cash rejected with a plain notice, no keyboard.
+            verify(exactly = 0) {
+                gateway.send(
+                    chatId = any(),
+                    text = any(),
+                    keyboard = match { it != null },
+                    replyToMessageId = any(),
+                )
+            }
+            verify(exactly = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = null) }
         }
     }
 
