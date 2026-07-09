@@ -6,6 +6,7 @@ import MailAggregator.MailAggregator.telegram.wizard.MessageContext
 import MailAggregator.MailAggregator.telegram.wizard.Wizard
 import com.pengrad.telegrambot.model.Message
 import com.pengrad.telegrambot.model.Update
+import jakarta.annotation.PostConstruct
 import org.springframework.context.MessageSource
 import java.util.Locale
 
@@ -32,6 +33,13 @@ class UpdateRouter(
     private val messageSource: MessageSource,
 ) {
     private val allWizards: List<Wizard> = publicWizards + registeredWizards
+
+    /** Register [handleUpdate] as the long-polling callback. Called by Spring after all
+     *  wizards + PlainCommandHandler are wired. */
+    @PostConstruct
+    fun startLongPolling() {
+        gateway.start(::handleUpdate)
+    }
 
     fun handleUpdate(update: Update) {
         val msg = update.message()

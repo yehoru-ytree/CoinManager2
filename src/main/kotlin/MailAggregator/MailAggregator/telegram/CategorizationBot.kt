@@ -1,32 +1,15 @@
 package MailAggregator.MailAggregator.telegram
 
+import MailAggregator.MailAggregator.bank.Transaction
 import MailAggregator.MailAggregator.common.Category
 import MailAggregator.MailAggregator.common.config.Config.Companion.TIME_ZONE
 import MailAggregator.MailAggregator.common.repository.CategoryRepository
-import MailAggregator.MailAggregator.common.usecases.AddCashTransactionUseCase
-import MailAggregator.MailAggregator.common.usecases.AddCategoryUseCase
-import MailAggregator.MailAggregator.common.usecases.HandleTelegramCommentUseCase
-import MailAggregator.MailAggregator.common.usecases.SaveKeywordUseCase
 import MailAggregator.MailAggregator.household.Household
 import MailAggregator.MailAggregator.household.repository.HouseholdRepository
-import MailAggregator.MailAggregator.household.repository.InviteTokenRepository
-import MailAggregator.MailAggregator.household.usecase.AddBankAccountUseCase
-import MailAggregator.MailAggregator.household.usecase.CreateHouseholdUseCase
-import MailAggregator.MailAggregator.household.usecase.JoinHouseholdUseCase
-import MailAggregator.MailAggregator.bank.Transaction
-import MailAggregator.MailAggregator.bank.repository.TransactionRepository
-import MailAggregator.MailAggregator.bank.repository.TransactionStatusRepository
-import MailAggregator.MailAggregator.monobank.api.MonobankApi
-import MailAggregator.MailAggregator.spreadsheet.Authentication
 import MailAggregator.MailAggregator.telegram.model.CategorizationRequest
 import MailAggregator.MailAggregator.telegram.repository.TelegramLogMessageRepository
-import MailAggregator.MailAggregator.telegram.wizard.AddCardWizard
-import MailAggregator.MailAggregator.telegram.wizard.AddCategoryWizard
-import MailAggregator.MailAggregator.telegram.wizard.CashEntryWizard
-import MailAggregator.MailAggregator.telegram.wizard.CreateHouseholdWizard
 import com.pengrad.telegrambot.model.request.InlineKeyboardButton
 import com.pengrad.telegrambot.model.request.InlineKeyboardMarkup
-import jakarta.annotation.PostConstruct
 import org.springframework.context.MessageSource
 import java.time.Instant
 import java.time.ZoneId
@@ -36,91 +19,21 @@ import java.util.UUID
 
 /**
  * Public bot surface: two broadcasts ([sendTx] / [sendLog]) that fan messages out to household
- * members, a plain [notifyChat] DM for out-of-band messages (e.g. Gmail verification codes),
- * and long-polling start-up via [startLongPolling].
+ * members, plus a plain [notifyChat] DM used by the email ingestor to relay Gmail-forwarding
+ * verification codes to a specific chat without going through the keyword/category pipeline.
  *
- * Everything else — routing, wizards, plain commands, transaction callbacks — is delegated
- * to the wired-up [UpdateRouter] tree.
+ * Routing (Wizards, PlainCommandHandler, transaction-callback handling) lives in [UpdateRouter];
+ * long-polling startup is wired there via `@PostConstruct`. This class is deliberately unaware
+ * of the router — it only depends on its broadcast collaborators.
  */
 class CategorizationBot(
     private val gateway: TelegramGateway,
     private val categoryRepository: CategoryRepository,
-    private val addCategoryUseCase: AddCategoryUseCase,
-    private val transactionRepository: TransactionRepository,
-    private val telegramLogMessageRepository: TelegramLogMessageRepository,
-    private val handleTelegramCommentUseCase: HandleTelegramCommentUseCase,
-    private val saveKeywordUseCase: SaveKeywordUseCase,
-    private val transactionStatusRepository: TransactionStatusRepository,
     private val householdRepository: HouseholdRepository,
-    private val createHouseholdUseCase: CreateHouseholdUseCase,
-    private val joinHouseholdUseCase: JoinHouseholdUseCase,
-    private val addBankAccountUseCase: AddBankAccountUseCase,
-    private val addCashTransactionUseCase: AddCashTransactionUseCase,
-    private val inviteTokenRepository: InviteTokenRepository,
-    private val authentication: Authentication,
-    private val monobankApi: MonobankApi,
-    private val ingestEmail: String,
+    private val telegramLogMessageRepository: TelegramLogMessageRepository,
     private val messageSource: MessageSource,
     private val zoneId: ZoneId = TIME_ZONE,
-    private val onDecision: (txId: String, decision: Decision) -> Unit,
 ) {
-    private val cashEntryWizard = CashEntryWizard(
-        gateway = gateway,
-        addCashTransactionUseCase = addCashTransactionUseCase,
-        messageSource = messageSource,
-        zoneId = zoneId,
-        broadcastTx = ::sendTx,
-    )
-    private val createHouseholdWizard = CreateHouseholdWizard(
-        gateway = gateway,
-        householdRepository = householdRepository,
-        createHouseholdUseCase = createHouseholdUseCase,
-        authentication = authentication,
-        messageSource = messageSource,
-    )
-    private val addCategoryWizard = AddCategoryWizard(
-        gateway = gateway,
-        categoryRepository = categoryRepository,
-        addCategoryUseCase = addCategoryUseCase,
-        householdRepository = householdRepository,
-        messageSource = messageSource,
-    )
-    private val addCardWizard = AddCardWizard(
-        gateway = gateway,
-        addBankAccountUseCase = addBankAccountUseCase,
-        monobankApi = monobankApi,
-        householdRepository = householdRepository,
-        messageSource = messageSource,
-        ingestEmail = ingestEmail,
-    )
-    private val plainCommands = PlainCommandHandler(
-        gateway = gateway,
-        transactionRepository = transactionRepository,
-        transactionStatusRepository = transactionStatusRepository,
-        telegramLogMessageRepository = telegramLogMessageRepository,
-        handleTelegramCommentUseCase = handleTelegramCommentUseCase,
-        saveKeywordUseCase = saveKeywordUseCase,
-        categoryRepository = categoryRepository,
-        householdRepository = householdRepository,
-        inviteTokenRepository = inviteTokenRepository,
-        joinHouseholdUseCase = joinHouseholdUseCase,
-        messageSource = messageSource,
-        onDecision = onDecision,
-        sendLog = ::sendLog,
-    )
-    private val router = UpdateRouter(
-        gateway = gateway,
-        householdRepository = householdRepository,
-        plainCommands = plainCommands,
-        publicWizards = listOf(createHouseholdWizard),
-        registeredWizards = listOf(addCategoryWizard, addCardWizard, cashEntryWizard),
-        messageSource = messageSource,
-    )
-
-    @PostConstruct
-    fun startLongPolling() {
-        gateway.start(router::handleUpdate)
-    }
 
     /** Plain DM to a single chat — used by the email ingestor to relay Gmail forwarding
      *  verification codes to the user without going through the keyword/category pipeline. */
@@ -203,8 +116,8 @@ class CategorizationBot(
         return InlineKeyboardMarkup(*rows.toTypedArray())
     }
 
-    /** User's decision on a categorisation prompt — surfaced to the outside world via
-     *  the `onDecision` constructor lambda. */
+    /** User's decision on a categorisation prompt — surfaced to the outside world via the
+     *  onDecision lambda held by [PlainCommandHandler]. */
     sealed class Decision {
         data class Category(val categoryId: UUID) : Decision()
         data object Ignore : Decision()
