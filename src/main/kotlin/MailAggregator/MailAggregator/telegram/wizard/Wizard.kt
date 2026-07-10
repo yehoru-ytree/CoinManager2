@@ -18,6 +18,13 @@ import com.pengrad.telegrambot.model.Message
  * Returning `true` from `try*` methods means "I consumed this update — do not try any other handler."
  */
 interface Wizard {
+    /**
+     * True if this wizard is only offered *after* the registration gate (i.e. requires a linked
+     * household). CreateHousehold is the exception (it's how a fresh chat gets bootstrapped) — it
+     * overrides this to `false`. Everything else defaults to registered-only.
+     */
+    val requiresRegistration: Boolean get() = true
+
     /** True if this wizard currently owns state for [chatId] (i.e. is mid-flow with that chat). */
     fun hasState(chatId: Long): Boolean
 

@@ -21,10 +21,12 @@ import MailAggregator.MailAggregator.telegram.wizard.AddCardWizard
 import MailAggregator.MailAggregator.telegram.wizard.AddCategoryWizard
 import MailAggregator.MailAggregator.telegram.wizard.CashEntryWizard
 import MailAggregator.MailAggregator.telegram.wizard.CreateHouseholdWizard
+import MailAggregator.MailAggregator.telegram.wizard.Wizard
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.MessageSource
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.core.annotation.Order
 
 @Configuration
 class TelegramConfig {
@@ -52,21 +54,12 @@ class TelegramConfig {
         messageSource = messageSource,
     )
 
-    @Bean
-    fun cashEntryWizard(
-        telegramGateway: TelegramGateway,
-        addCashTransactionUseCase: AddCashTransactionUseCase,
-        messageSource: MessageSource,
-        categorizationBot: CategorizationBot,
-    ) = CashEntryWizard(
-        gateway = telegramGateway,
-        addCashTransactionUseCase = addCashTransactionUseCase,
-        messageSource = messageSource,
-        zoneId = Config.TIME_ZONE,
-        promptHousehold = categorizationBot::promptHousehold,
-    )
+    // Wizards. Router injects them as `List<Wizard>` — Spring collects all beans of that type
+    // and orders them by the @Order value. Lower @Order = earlier in the router's per-phase
+    // iteration (matters if two wizards ever match the same trigger; today none do).
 
     @Bean
+    @Order(1)
     fun createHouseholdWizard(
         telegramGateway: TelegramGateway,
         householdRepository: HouseholdRepository,
@@ -82,6 +75,7 @@ class TelegramConfig {
     )
 
     @Bean
+    @Order(2)
     fun addCategoryWizard(
         telegramGateway: TelegramGateway,
         categoryRepository: CategoryRepository,
@@ -97,6 +91,7 @@ class TelegramConfig {
     )
 
     @Bean
+    @Order(3)
     fun addCardWizard(
         telegramGateway: TelegramGateway,
         addBankAccountUseCase: AddBankAccountUseCase,
@@ -111,6 +106,21 @@ class TelegramConfig {
         householdRepository = householdRepository,
         messageSource = messageSource,
         ingestEmail = ingestEmail,
+    )
+
+    @Bean
+    @Order(4)
+    fun cashEntryWizard(
+        telegramGateway: TelegramGateway,
+        addCashTransactionUseCase: AddCashTransactionUseCase,
+        messageSource: MessageSource,
+        categorizationBot: CategorizationBot,
+    ) = CashEntryWizard(
+        gateway = telegramGateway,
+        addCashTransactionUseCase = addCashTransactionUseCase,
+        messageSource = messageSource,
+        zoneId = Config.TIME_ZONE,
+        promptHousehold = categorizationBot::promptHousehold,
     )
 
     @Bean
@@ -151,17 +161,13 @@ class TelegramConfig {
         telegramGateway: TelegramGateway,
         householdRepository: HouseholdRepository,
         plainCommandHandler: PlainCommandHandler,
-        createHouseholdWizard: CreateHouseholdWizard,
-        addCategoryWizard: AddCategoryWizard,
-        addCardWizard: AddCardWizard,
-        cashEntryWizard: CashEntryWizard,
+        wizards: List<Wizard>,
         messageSource: MessageSource,
     ) = UpdateRouter(
         gateway = telegramGateway,
         householdRepository = householdRepository,
         plainCommands = plainCommandHandler,
-        publicWizards = listOf(createHouseholdWizard),
-        registeredWizards = listOf(addCategoryWizard, addCardWizard, cashEntryWizard),
+        wizards = wizards,
         messageSource = messageSource,
     )
 }

@@ -146,8 +146,7 @@ class CategorizationBotTest {
             gateway = gateway,
             householdRepository = householdRepository,
             plainCommands = plainCommands,
-            publicWizards = listOf(createHouseholdWizard),
-            registeredWizards = listOf(addCategoryWizard, addCardWizard, cashEntryWizard),
+            wizards = listOf(createHouseholdWizard, addCategoryWizard, addCardWizard, cashEntryWizard),
             messageSource = messageSource,
         )
         router.startLongPolling() // registers the onUpdate lambda with the gateway (captured into onUpdateSlot)
