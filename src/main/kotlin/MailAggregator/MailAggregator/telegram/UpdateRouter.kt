@@ -33,12 +33,11 @@ class UpdateRouter(
      * per-wizard [Wizard.requiresRegistration] flag. Iteration order comes from Spring's bean
      * ordering (respects `@Order` annotations on the @Bean definitions).
      */
-    wizards: List<Wizard>,
+    private val wizards: List<Wizard>,
     private val messageSource: MessageSource,
 ) {
     private val publicWizards: List<Wizard> = wizards.filterNot { it.requiresRegistration }
     private val registeredWizards: List<Wizard> = wizards.filter { it.requiresRegistration }
-    private val allWizards: List<Wizard> = wizards
 
     /** Register [handleUpdate] as the long-polling callback. Called by Spring after all
      *  wizards + PlainCommandHandler are wired. */
@@ -132,7 +131,7 @@ class UpdateRouter(
         }
         val data = cq.data() ?: return
         val context = CallbackContext(chatId = chatId, cq = cq, data = data, user = user)
-        for (wizard in allWizards) {
+        for (wizard in wizards) {
             if (wizard.tryHandleCallback(context)) return
         }
         if (plainCommands.tryHandleCallback(cq, chatId, user, data)) return
@@ -146,7 +145,7 @@ class UpdateRouter(
      */
     private fun resetOtherFlows(chatId: Long, msg: Message, currentlyStarting: Wizard) {
         val restartingSelf = currentlyStarting.hasState(chatId)
-        val hadAnyFlow = allWizards.fold(false) { acc, wizard -> wizard.resetState(chatId) || acc }
+        val hadAnyFlow = wizards.fold(false) { acc, wizard -> wizard.resetState(chatId) || acc }
         val notice = when {
             hadAnyFlow && restartingSelf -> applyLocale("flow.restart.startingNew")
             hadAnyFlow -> applyLocale("flow.restart.continue")
