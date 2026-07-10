@@ -17,6 +17,8 @@ class CreateHouseholdWizard(
     private val messageSource: MessageSource,
 ) : Wizard {
 
+    override val requiresRegistration: Boolean = false // public wizard: how a fresh chat bootstraps
+
     private val states = ConcurrentHashMap<Long, State>()
 
     private val createHouseholdTrigger: String by lazy { applyLocale("trigger.createHousehold") }
