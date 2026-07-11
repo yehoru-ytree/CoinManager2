@@ -688,7 +688,7 @@ class CategorizationBotTest {
             id = UUID.randomUUID(),
             name = "GROCERIES",
             sheetRow = 3,
-            isDefault = true, // seeded → picker must filter out
+            isDefault = true, // seeded default; removable like any other non-OTHER category
         )
 
         private fun otherCat(householdId: UUID) = category(householdId, "Other").copy(
@@ -699,11 +699,11 @@ class CategorizationBotTest {
         )
 
         @Test
-        fun `trigger with no removable categories sends noneRemovable reply and does not set state`() {
-            // Given: only base + OTHER present — nothing eligible for removal
+        fun `trigger with only OTHER present sends noneRemovable reply and does not set state`() {
+            // Given: nothing but OTHER — the picker filters it out and has nothing to show.
             val chatId = 13001L
             val (_, household) = registerUser(chatId)
-            every { categoryRepository.findAll(household.id) } returns listOf(base(household.id), otherCat(household.id))
+            every { categoryRepository.findAll(household.id) } returns listOf(otherCat(household.id))
             every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returns 500L
 
             // When
@@ -714,6 +714,28 @@ class CategorizationBotTest {
                 gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = 1)
             }
             verify(exactly = 0) { removeCategoryUseCase.remove(any(), any()) }
+        }
+
+        @Test
+        fun `seeded (isDefault) categories are included in the picker`() {
+            // Given: only a seeded category + OTHER — the seeded one is removable now, so the
+            // picker keyboard fires with it as a button.
+            val chatId = 13010L
+            val (_, household) = registerUser(chatId)
+            val seeded = base(household.id)
+            every { categoryRepository.findAll(household.id) } returns listOf(seeded, otherCat(household.id))
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returns 500L
+
+            feed(textUpdate(chatId, "Удалить категорию", messageId = 1))
+
+            verify(exactly = 1) {
+                gateway.send(
+                    chatId = chatId,
+                    text = any(),
+                    keyboard = match { it != null },
+                    replyToMessageId = 1,
+                )
+            }
         }
 
         @Test
@@ -855,31 +877,6 @@ class CategorizationBotTest {
             // Then: alreadyDone toast, no use case invocation
             verify(exactly = 0) { removeCategoryUseCase.remove(any(), any()) }
             verify(exactly = 1) { gateway.answerCallback("cb-501", any()) }
-        }
-
-        @Test
-        fun `CannotRemoveBase result surfaces the base-guard reply without broadcasting`() {
-            // Given: use case returns CannotRemoveBase (defense-in-depth — the picker already filters
-            // base cats, but if a client crafts a callback, the use case still guards)
-            val chatId = 13008L
-            val (user, household) = registerUser(chatId)
-            val rem = removable(household.id)
-            val other2 = botUser(chatId = 22222L, householdId = household.id)
-            every { householdRepository.findUsersInHousehold(household.id) } returns listOf(user, other2)
-            every { categoryRepository.findAll(household.id) } returns listOf(rem, otherCat(household.id))
-            every { categoryRepository.findById(rem.id) } returns rem
-            every { removeCategoryUseCase.remove(household, rem.id) } returns
-                RemoveCategoryUseCase.Result.CannotRemoveBase(rem)
-            every { gateway.send(chatId = any(), text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany
-                listOf(500L, 501L, 502L)
-
-            feed(textUpdate(chatId, "Удалить категорию", messageId = 1))
-            feed(callbackUpdate(chatId, data = "rc|${rem.id}", attachedMessageId = 500))
-            feed(callbackUpdate(chatId, data = "rcc|${rem.id}", attachedMessageId = 501))
-
-            // Then: use case ran, reply went to actor only, other member did NOT receive a broadcast
-            verify(exactly = 1) { removeCategoryUseCase.remove(household, rem.id) }
-            verify(exactly = 0) { gateway.send(chatId = 22222L, text = any(), keyboard = any(), replyToMessageId = any()) }
         }
 
         @Test

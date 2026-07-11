@@ -65,7 +65,7 @@ class RemoveCategoryWizard(
     override fun start(context: MessageContext) {
         val household = context.household ?: return
         val removable = categoryRepository.findAll(household.id)
-            .filter { !it.isDefault && !it.isOther }
+            .filter { !it.isOther }
             .sortedBy { it.sheetRow }
         if (removable.isEmpty()) {
             reply(context.msg, applyLocale("removeCategory.noneRemovable"))
@@ -160,8 +160,6 @@ class RemoveCategoryWizard(
                     text = applyLocale("removeCategory.broadcast", displayNameOf(context.cq.from()), result.category.displayName),
                 )
             }
-            is RemoveCategoryUseCase.Result.CannotRemoveBase ->
-                gateway.send(context.chatId, applyLocale("removeCategory.cannotRemoveBase", result.category.displayName))
             is RemoveCategoryUseCase.Result.CannotRemoveOther ->
                 gateway.send(context.chatId, applyLocale("removeCategory.cannotRemoveOther"))
             is RemoveCategoryUseCase.Result.AlreadyRemoved ->

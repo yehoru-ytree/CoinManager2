@@ -42,7 +42,11 @@ class RemoveCategoryUseCase(
     fun remove(household: Household, categoryId: UUID): Result {
         val category = categoryRepository.findById(categoryId) ?: return Result.NotFound
         if (category.householdId != household.id) return Result.NotFound
-        if (category.isDefault) return Result.CannotRemoveBase(category)
+        // OTHER is the only hard invariant: CategorizeExpenseUseCase uses it as the fallback for
+        // uncategorised transactions, and AddCashTransaction / the OTHER-flow keyboard depend on
+        // its existence. Seeded (`isDefault`) categories are just convenience defaults — deleting
+        // GYM or POKER is a legit user choice. The two SPECIAL_RULES in CategorizeExpenseUseCase
+        // that reference CAFE_DELIVERY / UNIVERSITY by name fail soft (rule is skipped).
         if (category.isOther) return Result.CannotRemoveOther(category)
         if (category.status == Category.Status.DELETED) return Result.AlreadyRemoved(category)
 
@@ -173,7 +177,6 @@ class RemoveCategoryUseCase(
 
     sealed class Result {
         data class Removed(val category: Category) : Result()
-        data class CannotRemoveBase(val category: Category) : Result()
         data class CannotRemoveOther(val category: Category) : Result()
         data class AlreadyRemoved(val category: Category) : Result()
         data object NotFound : Result()

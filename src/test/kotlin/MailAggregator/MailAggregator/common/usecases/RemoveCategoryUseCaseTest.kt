@@ -174,15 +174,27 @@ class RemoveCategoryUseCaseTest {
     }
 
     @Test
-    fun `returns CannotRemoveBase for isDefault=true without touching state`() {
-        val category = category(householdId = household.id, sheetRow = 1, isDefault = true)
+    fun `isDefault=true category can still be removed (only OTHER is protected)`() {
+        // Given: a seeded default category (e.g. POKER, GYM) — isDefault=true. The user is entitled
+        // to remove it; seeded categories are convenience presets, not hard requirements.
+        val category = category(householdId = household.id, sheetRow = 3, isDefault = true)
         every { categoryRepository.findById(category.id) } returns category
+        every { categoryRepository.save(any()) } answers { firstArg() }
+        every { categoryRepository.findAll(household.id) } returns listOf(
+            category(householdId = household.id, sheetRow = 0),
+            category(householdId = household.id, sheetRow = 1),
+            category(householdId = household.id, sheetRow = 2),
+        )
+        every { sheetRequester.sheetExists(household.sheetId, any()) } returns false
 
         val result = useCase.remove(household, category.id)
 
-        verify(exactly = 0) { categoryRepository.save(any()) }
-        verify(exactly = 0) { sheetRequester.updateTableRange(any(), any(), any()) }
-        assertTrue(result is RemoveCategoryUseCase.Result.CannotRemoveBase)
+        assertTrue(result is RemoveCategoryUseCase.Result.Removed)
+        verify(exactly = 1) {
+            categoryRepository.save(
+                match { it.id == category.id && it.status == Category.Status.DELETED },
+            )
+        }
     }
 
     @Test
