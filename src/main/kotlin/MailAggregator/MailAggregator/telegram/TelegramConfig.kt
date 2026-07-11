@@ -8,6 +8,7 @@ import MailAggregator.MailAggregator.common.usecases.AddCashTransactionUseCase
 import MailAggregator.MailAggregator.common.usecases.AddCategoryUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramCommentUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramResponseUseCase
+import MailAggregator.MailAggregator.common.usecases.RemoveCategoryUseCase
 import MailAggregator.MailAggregator.common.usecases.SaveKeywordUseCase
 import MailAggregator.MailAggregator.household.repository.HouseholdRepository
 import MailAggregator.MailAggregator.household.repository.InviteTokenRepository
@@ -21,6 +22,7 @@ import MailAggregator.MailAggregator.telegram.wizard.AddCardWizard
 import MailAggregator.MailAggregator.telegram.wizard.AddCategoryWizard
 import MailAggregator.MailAggregator.telegram.wizard.CashEntryWizard
 import MailAggregator.MailAggregator.telegram.wizard.CreateHouseholdWizard
+import MailAggregator.MailAggregator.telegram.wizard.RemoveCategoryWizard
 import MailAggregator.MailAggregator.telegram.wizard.Wizard
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.context.MessageSource
@@ -92,6 +94,22 @@ class TelegramConfig {
 
     @Bean
     @Order(3)
+    fun removeCategoryWizard(
+        telegramGateway: TelegramGateway,
+        categoryRepository: CategoryRepository,
+        removeCategoryUseCase: RemoveCategoryUseCase,
+        householdRepository: HouseholdRepository,
+        messageSource: MessageSource,
+    ) = RemoveCategoryWizard(
+        gateway = telegramGateway,
+        categoryRepository = categoryRepository,
+        removeCategoryUseCase = removeCategoryUseCase,
+        householdRepository = householdRepository,
+        messageSource = messageSource,
+    )
+
+    @Bean
+    @Order(4)
     fun addCardWizard(
         telegramGateway: TelegramGateway,
         addBankAccountUseCase: AddBankAccountUseCase,
@@ -109,7 +127,7 @@ class TelegramConfig {
     )
 
     @Bean
-    @Order(4)
+    @Order(5)
     fun cashEntryWizard(
         telegramGateway: TelegramGateway,
         addCashTransactionUseCase: AddCashTransactionUseCase,

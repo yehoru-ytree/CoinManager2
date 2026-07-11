@@ -49,6 +49,7 @@ class PlainCommandHandler(
 
     private val saveKeywordTrigger: String by lazy { applyLocale("trigger.save") }
     private val addCategoryTrigger: String by lazy { applyLocale("trigger.addCategory") }
+    private val removeCategoryTrigger: String by lazy { applyLocale("trigger.removeCategory") }
     private val createHouseholdTrigger: String by lazy { applyLocale("trigger.createHousehold") }
     private val addCardTrigger: String by lazy { applyLocale("trigger.addCard") }
     private val cashTrigger: String by lazy { applyLocale("trigger.cash") }
@@ -116,6 +117,7 @@ class PlainCommandHandler(
                 addCardTrigger,
                 inviteTrigger,
                 addCategoryTrigger,
+                removeCategoryTrigger,
                 cashTrigger,
                 saveKeywordTrigger,
                 cancelTrigger,

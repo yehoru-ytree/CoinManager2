@@ -13,6 +13,7 @@ import MailAggregator.MailAggregator.common.usecases.ExecuteTransactionsUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleOtherExpensesUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramCommentUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramResponseUseCase
+import MailAggregator.MailAggregator.common.usecases.RemoveCategoryUseCase
 import MailAggregator.MailAggregator.common.usecases.SaveKeywordUseCase
 import MailAggregator.MailAggregator.common.usecases.SeedDefaultCategoriesUseCase
 import MailAggregator.MailAggregator.household.repository.HouseholdRepository
@@ -60,6 +61,16 @@ class Config(
         categoryRepository: CategoryRepository,
         sheetRequester: SheetRequester,
     ) = AddCategoryUseCase(
+        categoryRepository = categoryRepository,
+        sheetRequester = sheetRequester,
+        zoneId = TIME_ZONE,
+    )
+
+    @Bean
+    fun removeCategoryUseCase(
+        categoryRepository: CategoryRepository,
+        sheetRequester: SheetRequester,
+    ) = RemoveCategoryUseCase(
         categoryRepository = categoryRepository,
         sheetRequester = sheetRequester,
     )
