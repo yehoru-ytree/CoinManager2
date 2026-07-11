@@ -6,6 +6,7 @@ import MailAggregator.MailAggregator.bank.repository.BankAccountRepository
 import MailAggregator.MailAggregator.bank.repository.TransactionRepository
 import MailAggregator.MailAggregator.bank.repository.TransactionStatusRepository
 import MailAggregator.MailAggregator.common.repository.CategoryRepository
+import MailAggregator.MailAggregator.common.repository.MonthCategoryLayoutRepository
 import MailAggregator.MailAggregator.common.usecases.AddCashTransactionUseCase
 import MailAggregator.MailAggregator.common.usecases.AddCategoryUseCase
 import MailAggregator.MailAggregator.common.usecases.CategorizeExpenseUseCase
@@ -13,6 +14,7 @@ import MailAggregator.MailAggregator.common.usecases.ExecuteTransactionsUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleOtherExpensesUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramCommentUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramResponseUseCase
+import MailAggregator.MailAggregator.common.usecases.RemoveCategoryUseCase
 import MailAggregator.MailAggregator.common.usecases.SaveKeywordUseCase
 import MailAggregator.MailAggregator.common.usecases.SeedDefaultCategoriesUseCase
 import MailAggregator.MailAggregator.household.repository.HouseholdRepository
@@ -58,10 +60,25 @@ class Config(
     @Bean
     fun addCategoryUseCase(
         categoryRepository: CategoryRepository,
+        monthCategoryLayoutRepository: MonthCategoryLayoutRepository,
         sheetRequester: SheetRequester,
     ) = AddCategoryUseCase(
         categoryRepository = categoryRepository,
+        monthCategoryLayoutRepository = monthCategoryLayoutRepository,
         sheetRequester = sheetRequester,
+        zoneId = TIME_ZONE,
+    )
+
+    @Bean
+    fun removeCategoryUseCase(
+        categoryRepository: CategoryRepository,
+        monthCategoryLayoutRepository: MonthCategoryLayoutRepository,
+        sheetRequester: SheetRequester,
+    ) = RemoveCategoryUseCase(
+        categoryRepository = categoryRepository,
+        monthCategoryLayoutRepository = monthCategoryLayoutRepository,
+        sheetRequester = sheetRequester,
+        zoneId = TIME_ZONE,
     )
 
     @Bean

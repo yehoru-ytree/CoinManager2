@@ -106,12 +106,12 @@ class CategorizationBot(
         val rows = mutableListOf<Array<InlineKeyboardButton>>()
         regular.chunked(3).forEach { chunk ->
             rows += chunk.map { cat ->
-                InlineKeyboardButton(cat.displayName).callbackData("c|$transactionId|${cat.sheetRow}")
+                InlineKeyboardButton(cat.displayName).callbackData("c|$transactionId|${cat.id}")
             }.toTypedArray()
         }
         rows += arrayOf(
-            InlineKeyboardButton(applyLocale("keyboard.ignore")).callbackData("c|$transactionId|-1"),
-            InlineKeyboardButton(applyLocale("keyboard.other")).callbackData("c|$transactionId|${other.sheetRow}"),
+            InlineKeyboardButton(applyLocale("keyboard.ignore")).callbackData("c|$transactionId|IGNORE"),
+            InlineKeyboardButton(applyLocale("keyboard.other")).callbackData("c|$transactionId|${other.id}"),
         )
         return InlineKeyboardMarkup(*rows.toTypedArray())
     }

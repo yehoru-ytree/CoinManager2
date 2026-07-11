@@ -11,6 +11,7 @@ import MailAggregator.MailAggregator.common.repository.CategoryRepository
 import MailAggregator.MailAggregator.common.usecases.AddCashTransactionUseCase
 import MailAggregator.MailAggregator.common.usecases.AddCategoryUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramCommentUseCase
+import MailAggregator.MailAggregator.common.usecases.RemoveCategoryUseCase
 import MailAggregator.MailAggregator.common.usecases.SaveKeywordUseCase
 import MailAggregator.MailAggregator.household.BotUser
 import MailAggregator.MailAggregator.household.Household
@@ -32,6 +33,7 @@ import MailAggregator.MailAggregator.telegram.wizard.AddCardWizard
 import MailAggregator.MailAggregator.telegram.wizard.AddCategoryWizard
 import MailAggregator.MailAggregator.telegram.wizard.CashEntryWizard
 import MailAggregator.MailAggregator.telegram.wizard.CreateHouseholdWizard
+import MailAggregator.MailAggregator.telegram.wizard.RemoveCategoryWizard
 import com.pengrad.telegrambot.model.CallbackQuery
 import com.pengrad.telegrambot.model.Message
 import com.pengrad.telegrambot.model.Update
@@ -57,6 +59,7 @@ class CategorizationBotTest {
     private val gateway: TelegramGateway = mockk(relaxed = true)
     private val categoryRepository: CategoryRepository = mockk(relaxed = true)
     private val addCategoryUseCase: AddCategoryUseCase = mockk(relaxed = true)
+    private val removeCategoryUseCase: RemoveCategoryUseCase = mockk(relaxed = true)
     private val transactionRepository: TransactionRepository = mockk(relaxed = true)
     private val telegramLogMessageRepository: TelegramLogMessageRepository = mockk(relaxed = true)
     private val handleTelegramCommentUseCase: HandleTelegramCommentUseCase = mockk(relaxed = true)
@@ -119,6 +122,13 @@ class CategorizationBotTest {
             householdRepository = householdRepository,
             messageSource = messageSource,
         )
+        val removeCategoryWizard = RemoveCategoryWizard(
+            gateway = gateway,
+            categoryRepository = categoryRepository,
+            removeCategoryUseCase = removeCategoryUseCase,
+            householdRepository = householdRepository,
+            messageSource = messageSource,
+        )
         val addCardWizard = AddCardWizard(
             gateway = gateway,
             addBankAccountUseCase = addBankAccountUseCase,
@@ -146,7 +156,7 @@ class CategorizationBotTest {
             gateway = gateway,
             householdRepository = householdRepository,
             plainCommands = plainCommands,
-            wizards = listOf(createHouseholdWizard, addCategoryWizard, addCardWizard, cashEntryWizard),
+            wizards = listOf(createHouseholdWizard, addCategoryWizard, removeCategoryWizard, addCardWizard, cashEntryWizard),
             messageSource = messageSource,
         )
         router.startLongPolling() // registers the onUpdate lambda with the gateway (captured into onUpdateSlot)
@@ -660,6 +670,231 @@ class CategorizationBotTest {
             // Any further reply to the same prompt must NOT be treated as a wizard step anymore.
             feed(textUpdate(chatId, "Coffee shops", messageId = 51, replyTo = botReplyPrompt(promptId)))
             verify(exactly = 0) { addCategoryUseCase.add(any(), any(), any(), any(), any()) }
+        }
+    }
+
+    @Nested
+    inner class RemoveCategoryWizard {
+
+        private fun removable(householdId: UUID) = category(householdId, "Coffee").copy(
+            id = UUID.randomUUID(),
+            name = "COFFEE",
+            sheetRow = 6,
+            isOther = false,
+            isDefault = false,
+        )
+
+        private fun base(householdId: UUID) = category(householdId, "Groceries").copy(
+            id = UUID.randomUUID(),
+            name = "GROCERIES",
+            sheetRow = 3,
+            isDefault = true, // seeded default; removable like any other non-OTHER category
+        )
+
+        private fun otherCat(householdId: UUID) = category(householdId, "Other").copy(
+            id = UUID.randomUUID(),
+            name = "OTHER",
+            sheetRow = 999,
+            isOther = true,
+        )
+
+        @Test
+        fun `trigger with only OTHER present sends noneRemovable reply and does not set state`() {
+            // Given: nothing but OTHER — the picker filters it out and has nothing to show.
+            val chatId = 13001L
+            val (_, household) = registerUser(chatId)
+            every { categoryRepository.findAll(household.id) } returns listOf(otherCat(household.id))
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returns 500L
+
+            // When
+            feed(textUpdate(chatId, "Удалить категорию", messageId = 1))
+
+            // Then: a plain reply (no keyboard) threaded to the trigger; no use case invocation
+            verify(exactly = 1) {
+                gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = 1)
+            }
+            verify(exactly = 0) { removeCategoryUseCase.remove(any(), any()) }
+        }
+
+        @Test
+        fun `seeded (isDefault) categories are included in the picker`() {
+            // Given: only a seeded category + OTHER — the seeded one is removable now, so the
+            // picker keyboard fires with it as a button.
+            val chatId = 13010L
+            val (_, household) = registerUser(chatId)
+            val seeded = base(household.id)
+            every { categoryRepository.findAll(household.id) } returns listOf(seeded, otherCat(household.id))
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returns 500L
+
+            feed(textUpdate(chatId, "Удалить категорию", messageId = 1))
+
+            verify(exactly = 1) {
+                gateway.send(
+                    chatId = chatId,
+                    text = any(),
+                    keyboard = match { it != null },
+                    replyToMessageId = 1,
+                )
+            }
+        }
+
+        @Test
+        fun `trigger sends picker keyboard threaded to the trigger message`() {
+            // Given: one removable category is present
+            val chatId = 13002L
+            val (_, household) = registerUser(chatId)
+            every { categoryRepository.findAll(household.id) } returns
+                listOf(base(household.id), removable(household.id), otherCat(household.id))
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returns 500L
+
+            // When
+            feed(textUpdate(chatId, "Удалить категорию", messageId = 1))
+
+            // Then: picker sent WITH a keyboard, threaded under the trigger msg
+            verify(exactly = 1) {
+                gateway.send(
+                    chatId = chatId,
+                    text = any(),
+                    keyboard = match { it != null },
+                    replyToMessageId = 1,
+                )
+            }
+        }
+
+        @Test
+        fun `pick callback edits picker keyboard away and sends confirmation prompt with keyboard`() {
+            // Given: wizard is in AwaitingPick state after trigger
+            val chatId = 13003L
+            val (_, household) = registerUser(chatId)
+            val rem = removable(household.id)
+            every { categoryRepository.findAll(household.id) } returns listOf(rem, otherCat(household.id))
+            every { categoryRepository.findById(rem.id) } returns rem
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(500L, 501L)
+
+            feed(textUpdate(chatId, "Удалить категорию", messageId = 1))
+            // When: user taps a category
+            feed(callbackUpdate(chatId, data = "rc|${rem.id}", attachedMessageId = 500))
+
+            // Then: picker keyboard cleared, callback answered, confirmation sent with a keyboard
+            verify(exactly = 1) { gateway.editKeyboard(chatId, 500L, null) }
+            verify(exactly = 1) { gateway.answerCallback("cb-500", null) }
+            verify(exactly = 1) {
+                gateway.send(
+                    chatId = chatId,
+                    text = any(),
+                    keyboard = match { it != null },
+                    replyToMessageId = 500,
+                )
+            }
+            verify(exactly = 0) { removeCategoryUseCase.remove(any(), any()) }
+        }
+
+        @Test
+        fun `pick callback for a category belonging to a different household is rejected`() {
+            // Given: crafted callback data references a foreign category id
+            val chatId = 13004L
+            val (user, _) = registerUser(chatId)
+            val rem = removable(user.householdId)
+            every { categoryRepository.findAll(user.householdId) } returns listOf(rem, otherCat(user.householdId))
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returns 500L
+            val foreignId = UUID.randomUUID()
+            every { categoryRepository.findById(foreignId) } returns
+                rem.copy(id = foreignId, householdId = UUID.randomUUID())
+
+            feed(textUpdate(chatId, "Удалить категорию", messageId = 1))
+            // When
+            feed(callbackUpdate(chatId, data = "rc|$foreignId", attachedMessageId = 500))
+
+            // Then: rejected with a badCallback toast; no confirmation prompt sent, no state advance
+            verify(exactly = 1) { gateway.answerCallback("cb-500", any()) }
+            verify(exactly = 0) { gateway.editKeyboard(any(), any(), any()) }
+            verify(exactly = 0) { removeCategoryUseCase.remove(any(), any()) }
+        }
+
+        @Test
+        fun `pick callback with stale attached message id is a no-op except answerCallback`() {
+            // Given: wizard state's promptId = 500, but callback claims to be attached to msg 999
+            val chatId = 13005L
+            val (_, household) = registerUser(chatId)
+            val rem = removable(household.id)
+            every { categoryRepository.findAll(household.id) } returns listOf(rem, otherCat(household.id))
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returns 500L
+
+            feed(textUpdate(chatId, "Удалить категорию", messageId = 1))
+            // When: stale/duplicate callback from an older picker
+            feed(callbackUpdate(chatId, data = "rc|${rem.id}", attachedMessageId = 999))
+
+            // Then: alreadyDone toast, no keyboard mutation, no use case
+            verify(exactly = 1) { gateway.answerCallback("cb-999", any()) }
+            verify(exactly = 0) { gateway.editKeyboard(any(), any(), any()) }
+            verify(exactly = 0) { removeCategoryUseCase.remove(any(), any()) }
+        }
+
+        @Test
+        fun `confirm callback invokes RemoveCategoryUseCase and broadcasts to other household members`() {
+            // Given: two-member household, wizard driven through pick to AwaitingConfirmation
+            val chatId = 13006L
+            val (user, household) = registerUser(chatId)
+            val rem = removable(household.id)
+            val other2 = botUser(chatId = 22222L, householdId = household.id)
+            every { householdRepository.findUsersInHousehold(household.id) } returns listOf(user, other2)
+            every { categoryRepository.findAll(household.id) } returns listOf(rem, otherCat(household.id))
+            every { categoryRepository.findById(rem.id) } returns rem
+            every { removeCategoryUseCase.remove(household, rem.id) } returns
+                RemoveCategoryUseCase.Result.Removed(rem.copy(status = Category.Status.DELETED))
+            every { gateway.send(chatId = any(), text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany
+                listOf(500L, 501L, 502L, 503L, 504L)
+
+            feed(textUpdate(chatId, "Удалить категорию", messageId = 1))
+            feed(callbackUpdate(chatId, data = "rc|${rem.id}", attachedMessageId = 500))
+            // When: user confirms — confirmation prompt was msg 501
+            feed(callbackUpdate(chatId, data = "rcc|${rem.id}", attachedMessageId = 501))
+
+            // Then: use case ran with the right ids
+            verify(exactly = 1) { removeCategoryUseCase.remove(household, rem.id) }
+            // Broadcast to the OTHER member's chat only (actor's own chat gets the "done" reply)
+            verify(exactly = 1) { gateway.send(chatId = 22222L, text = any(), keyboard = null, replyToMessageId = null) }
+            // Confirmation keyboard cleared before invoking the use case
+            verify(exactly = 1) { gateway.editKeyboard(chatId, 501L, null) }
+        }
+
+        @Test
+        fun `confirm callback with categoryId mismatched against state is treated as stale`() {
+            // Given: wizard captured categoryId X in AwaitingConfirmation, callback carries Y
+            val chatId = 13007L
+            val (_, household) = registerUser(chatId)
+            val rem = removable(household.id)
+            every { categoryRepository.findAll(household.id) } returns listOf(rem, otherCat(household.id))
+            every { categoryRepository.findById(rem.id) } returns rem
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(500L, 501L)
+
+            feed(textUpdate(chatId, "Удалить категорию", messageId = 1))
+            feed(callbackUpdate(chatId, data = "rc|${rem.id}", attachedMessageId = 500))
+            // When: confirmation carries a different category id (stale button from a previous flow)
+            val differentId = UUID.randomUUID()
+            feed(callbackUpdate(chatId, data = "rcc|$differentId", attachedMessageId = 501))
+
+            // Then: alreadyDone toast, no use case invocation
+            verify(exactly = 0) { removeCategoryUseCase.remove(any(), any()) }
+            verify(exactly = 1) { gateway.answerCallback("cb-501", any()) }
+        }
+
+        @Test
+        fun `cancel via reply on picker prompt clears wizard state`() {
+            // Given: wizard in AwaitingPick after trigger
+            val chatId = 13009L
+            val (_, household) = registerUser(chatId)
+            val rem = removable(household.id)
+            every { categoryRepository.findAll(household.id) } returns listOf(rem, otherCat(household.id))
+            every { gateway.send(chatId = chatId, text = any(), keyboard = any(), replyToMessageId = any()) } returnsMany listOf(500L, 501L)
+
+            feed(textUpdate(chatId, "Удалить категорию", messageId = 1))
+            // When: user replies "Забей" on the picker prompt
+            feed(textUpdate(chatId, "Забей", messageId = 2, replyTo = botReplyPrompt(500)))
+            // Then: even if a stale pick callback later arrives on the same picker, no use case fires
+            feed(callbackUpdate(chatId, data = "rc|${rem.id}", attachedMessageId = 500))
+
+            verify(exactly = 0) { removeCategoryUseCase.remove(any(), any()) }
         }
     }
 
@@ -1227,7 +1462,7 @@ class CategorizationBotTest {
         }
 
         @Test
-        fun `sheet row = -1 dispatches Decision Ignore, clears keyboards on ALL household prompts, and sends the ignored log`() {
+        fun `IGNORE dispatches Decision Ignore, clears keyboards on ALL household prompts, and sends the ignored log`() {
             val chatId = 10002L
             val (_, household) = registerUser(chatId)
             val tx = tx(id = "tx-A", householdId = household.id)
@@ -1241,7 +1476,7 @@ class CategorizationBotTest {
             every { householdRepository.findHousehold(household.id) } returns household
             every { householdRepository.findUsersInHousehold(household.id) } returns emptyList()
 
-            feed(callbackUpdate(chatId, data = "c|tx-A|-1", attachedMessageId = 700))
+            feed(callbackUpdate(chatId, data = "c|tx-A|IGNORE", attachedMessageId = 700))
 
             verify(exactly = 1) { onDecision("tx-A", CategorizationBot.Decision.Ignore) }
             verify(exactly = 1) { gateway.editKeyboard(chatId, 500L, null) }
@@ -1255,24 +1490,25 @@ class CategorizationBotTest {
             val (_, household) = registerUser(chatId)
             val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
             every { transactionStatusRepository.findByTransactionId("tx-B") } returns null
-            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { categoryRepository.findById(chosen.id) } returns chosen
             every { telegramLogMessageRepository.findAllByTransactionId("tx-B") } returns emptyList()
             every { transactionRepository.get("tx-B") } returns Optional.of(tx(id = "tx-B", householdId = household.id))
             every { householdRepository.findHousehold(household.id) } returns household
             every { householdRepository.findUsersInHousehold(household.id) } returns emptyList()
 
-            feed(callbackUpdate(chatId, data = "c|tx-B|7", attachedMessageId = 700))
+            feed(callbackUpdate(chatId, data = "c|tx-B|${chosen.id}", attachedMessageId = 700))
 
             verify(exactly = 1) { onDecision("tx-B", CategorizationBot.Decision.Category(chosen.id)) }
         }
 
         @Test
-        fun `unknown sheet row (category lookup returns null) replies with badCallback and skips onDecision`() {
+        fun `unknown category id (findById returns null) replies with badCallback and skips onDecision`() {
             val chatId = 10004L
             val (_, household) = registerUser(chatId)
-            every { categoryRepository.findBySheetRow(household.id, 999) } returns null
+            val missingId = UUID.randomUUID()
+            every { categoryRepository.findById(missingId) } returns null
 
-            feed(callbackUpdate(chatId, data = "c|tx-C|999", attachedMessageId = 700))
+            feed(callbackUpdate(chatId, data = "c|tx-C|$missingId", attachedMessageId = 700))
 
             verify(exactly = 0) { onDecision(any(), any()) }
             verify(exactly = 1) { gateway.answerCallback("cb-700", any()) }
@@ -1283,10 +1519,10 @@ class CategorizationBotTest {
             val chatId = 10005L
             val (_, household) = registerUser(chatId)
             val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
-            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { categoryRepository.findById(chosen.id) } returns chosen
             every { transactionStatusRepository.findByTransactionId("tx-D") } returns TransactionStatus.EXECUTED
 
-            feed(callbackUpdate(chatId, data = "c|tx-D|7", attachedMessageId = 700))
+            feed(callbackUpdate(chatId, data = "c|tx-D|${chosen.id}", attachedMessageId = 700))
 
             verify(exactly = 0) { onDecision(any(), any()) }
             verify(exactly = 1) { gateway.editKeyboard(chatId, 700L, null) }
@@ -1298,10 +1534,10 @@ class CategorizationBotTest {
             val chatId = 10006L
             val (_, household) = registerUser(chatId)
             val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
-            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { categoryRepository.findById(chosen.id) } returns chosen
             every { transactionStatusRepository.findByTransactionId("tx-E") } returns TransactionStatus.IGNORED
 
-            feed(callbackUpdate(chatId, data = "c|tx-E|7", attachedMessageId = 700))
+            feed(callbackUpdate(chatId, data = "c|tx-E|${chosen.id}", attachedMessageId = 700))
 
             verify(exactly = 0) { onDecision(any(), any()) }
         }
@@ -1311,7 +1547,7 @@ class CategorizationBotTest {
             val chatId = 10007L
             every { householdRepository.findUserByChatId(chatId) } returns null
 
-            feed(callbackUpdate(chatId, data = "c|tx-F|-1", attachedMessageId = 700))
+            feed(callbackUpdate(chatId, data = "c|tx-F|IGNORE", attachedMessageId = 700))
 
             verify(exactly = 1) { gateway.answerCallback("cb-700", any()) }
             verify(exactly = 0) { onDecision(any(), any()) }
@@ -1337,10 +1573,10 @@ class CategorizationBotTest {
             val chatId = 11002L
             val (_, household) = registerUser(chatId)
             val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
-            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { categoryRepository.findById(chosen.id) } returns chosen
             every { transactionRepository.get("tx-Z") } returns Optional.empty()
 
-            feed(callbackUpdate(chatId, data = "k|tx-Z|7", attachedMessageId = 800))
+            feed(callbackUpdate(chatId, data = "k|tx-Z|${chosen.id}", attachedMessageId = 800))
 
             verify(exactly = 0) { saveKeywordUseCase(any(), any()) }
             verify(exactly = 1) { gateway.answerCallback("cb-800", any()) }
@@ -1351,11 +1587,11 @@ class CategorizationBotTest {
             val chatId = 11003L
             val (_, household) = registerUser(chatId)
             val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
-            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { categoryRepository.findById(chosen.id) } returns chosen
             every { transactionRepository.get("tx-S") } returns Optional.of(tx(id = "tx-S", householdId = household.id, description = "Coffee shop"))
             every { saveKeywordUseCase(chosen.id, "Coffee shop") } returns SaveKeywordUseCase.Result.Saved(chosen, "Coffee\\ shop")
 
-            feed(callbackUpdate(chatId, data = "k|tx-S|7", attachedMessageId = 800))
+            feed(callbackUpdate(chatId, data = "k|tx-S|${chosen.id}", attachedMessageId = 800))
 
             verify(exactly = 1) { saveKeywordUseCase(chosen.id, "Coffee shop") }
             verify(exactly = 1) { gateway.editKeyboard(chatId, 800L, null) }
@@ -1369,11 +1605,11 @@ class CategorizationBotTest {
             val chatId = 11004L
             val (_, household) = registerUser(chatId)
             val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
-            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { categoryRepository.findById(chosen.id) } returns chosen
             every { transactionRepository.get("tx-P") } returns Optional.of(tx(id = "tx-P", householdId = household.id, description = "Coffee"))
             every { saveKeywordUseCase(chosen.id, "Coffee") } returns SaveKeywordUseCase.Result.AlreadyPresent(chosen, "Coffee")
 
-            feed(callbackUpdate(chatId, data = "k|tx-P|7", attachedMessageId = 800))
+            feed(callbackUpdate(chatId, data = "k|tx-P|${chosen.id}", attachedMessageId = 800))
 
             verify(exactly = 1) { gateway.answerCallback("cb-800", any()) }
             verify(atLeast = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = null) }
@@ -1384,11 +1620,11 @@ class CategorizationBotTest {
             val chatId = 11005L
             val (_, household) = registerUser(chatId)
             val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
-            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { categoryRepository.findById(chosen.id) } returns chosen
             every { transactionRepository.get("tx-N") } returns Optional.of(tx(id = "tx-N", householdId = household.id, description = "d"))
             every { saveKeywordUseCase(chosen.id, "d") } returns SaveKeywordUseCase.Result.CategoryNotFound
 
-            feed(callbackUpdate(chatId, data = "k|tx-N|7", attachedMessageId = 800))
+            feed(callbackUpdate(chatId, data = "k|tx-N|${chosen.id}", attachedMessageId = 800))
 
             verify(exactly = 1) { gateway.answerCallback("cb-800", any()) }
         }
@@ -1398,11 +1634,11 @@ class CategorizationBotTest {
             val chatId = 11006L
             val (_, household) = registerUser(chatId)
             val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
-            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { categoryRepository.findById(chosen.id) } returns chosen
             every { transactionRepository.get("tx-M") } returns Optional.of(tx(id = "tx-M", householdId = household.id, description = ""))
             every { saveKeywordUseCase(chosen.id, "") } returns SaveKeywordUseCase.Result.EmptyKeyword
 
-            feed(callbackUpdate(chatId, data = "k|tx-M|7", attachedMessageId = 800))
+            feed(callbackUpdate(chatId, data = "k|tx-M|${chosen.id}", attachedMessageId = 800))
 
             verify(exactly = 1) { gateway.answerCallback("cb-800", any()) }
         }

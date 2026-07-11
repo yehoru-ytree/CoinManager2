@@ -2,6 +2,7 @@ package MailAggregator.MailAggregator.spreadsheet.usecases
 
 import MailAggregator.MailAggregator.common.Month
 import MailAggregator.MailAggregator.common.repository.CategoryRepository
+import MailAggregator.MailAggregator.common.repository.MonthCategoryLayoutRepository
 import MailAggregator.MailAggregator.household.Household
 import MailAggregator.MailAggregator.spreadsheet.usecase.VerifyMonthSheetExistsUseCase
 import MailAggregator.MailAggregator.spreadsheet.util.ExcelUtil
@@ -14,6 +15,7 @@ class GetSpendingsByDateUseCase(
     val sheetRequester: SheetRequester,
     val verifyMonthSheetExistsUseCase: VerifyMonthSheetExistsUseCase,
     val categoryRepository: CategoryRepository,
+    val monthCategoryLayoutRepository: MonthCategoryLayoutRepository,
 ) {
     operator fun invoke(household: Household, date: LocalDate): Map<UUID, Double> {
         val month = Month.fromIndex(date.month.value)
@@ -21,10 +23,13 @@ class GetSpendingsByDateUseCase(
 
         verifyMonthSheetExistsUseCase(household, sheetName)
 
-        val categories = categoryRepository.findAll(household.id)
-        val maxSheetRow = categories.maxOf { it.sheetRow }
+        // Frozen (categoryId -> row offset) for this month tab.
+        val layout = resolveLayout(household.id, date.year, date.month.value)
+        if (layout.isEmpty()) return emptyMap()
+        val maxOffset = layout.values.max()
+
         val startRow = UpdateSpendingsByDateUseCase.START_ROW
-        val endRow = startRow + maxSheetRow
+        val endRow = startRow + maxOffset
 
         val columnName = ExcelUtil.toColumnName(date.dayOfMonth)
         val sheet = sheetRequester.getSpreadSheetByRange(
@@ -44,9 +49,15 @@ class GetSpendingsByDateUseCase(
             ExcelUtil.cellDAtaToDouble(text)
         }
 
-        val bySheetRow = categories.associateBy { it.sheetRow }
+        val categoryIdByOffset = layout.entries.associate { (id, offset) -> offset to id }
         return values.mapIndexedNotNull { idx, amount ->
-            bySheetRow[idx]?.let { it.id to amount }
+            categoryIdByOffset[idx]?.let { it to amount }
         }.toMap()
+    }
+
+    private fun resolveLayout(householdId: UUID, year: Int, month: Int): Map<UUID, Int> {
+        val snapshot = monthCategoryLayoutRepository.getSnapshot(householdId, year, month)
+        if (snapshot.isNotEmpty()) return snapshot
+        return categoryRepository.findAll(householdId).associate { it.id to it.sheetRow }
     }
 }

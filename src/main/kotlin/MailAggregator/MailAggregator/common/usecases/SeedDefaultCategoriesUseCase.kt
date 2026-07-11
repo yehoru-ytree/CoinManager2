@@ -21,6 +21,7 @@ class SeedDefaultCategoriesUseCase(
                     priority = def.priority,
                     keywords = def.keywords,
                     isOther = def.isOther,
+                    isDefault = true,
                 ),
             )
         }

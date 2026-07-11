@@ -14,26 +14,37 @@ class CategoryRepository(
 ) {
     companion object {
         private val objectMapper: ObjectMapper = jacksonObjectMapper()
+        private const val STATUS_ACTIVE = "ACTIVE"
     }
 
+    /** Active categories only — the shape most callers want (pickers, add-flow uniqueness check). */
     fun findAll(householdId: UUID): List<Category> =
-        categoryJpaRepository.findAllByHouseholdId(householdId).map(::toDomain)
+        categoryJpaRepository.findAllByHouseholdIdAndStatus(householdId, STATUS_ACTIVE).map(::toDomain)
 
+    /**
+     * Return by id regardless of status — historical logs and stale keyboard callbacks need to
+     * resolve a category even after it's been soft-deleted.
+     */
     fun findById(id: UUID): Category? =
         categoryJpaRepository.findById(id).map(::toDomain).orElse(null)
 
+    /** Active-only name lookup (the wizard's duplicate check). A soft-deleted name is free to reuse. */
     fun findByName(householdId: UUID, name: String): Category? =
-        categoryJpaRepository.findByHouseholdIdAndName(householdId, name)?.let(::toDomain)
-
-    fun findBySheetRow(householdId: UUID, sheetRow: Int): Category? =
-        categoryJpaRepository.findByHouseholdIdAndSheetRow(householdId, sheetRow)?.let(::toDomain)
+        categoryJpaRepository.findByHouseholdIdAndNameAndStatus(householdId, name, STATUS_ACTIVE)?.let(::toDomain)
 
     fun findOther(householdId: UUID): Category =
         categoryJpaRepository.findFirstByHouseholdIdAndIsOtherTrue(householdId)?.let(::toDomain)
             ?: error("No OTHER category for household $householdId; seed the household first.")
 
+    /**
+     * Next free sheetRow = max ACTIVE sheetRow + 1. DELETED rows are excluded because after
+     * [MailAggregator.MailAggregator.common.usecases.RemoveCategoryUseCase] renumbers, the
+     * template is dense across ACTIVE rows and a new category goes right at the top of the pile.
+     * Historical position of a DELETED row lives in `MonthCategoryLayout` for past months only.
+     */
     fun nextSheetRow(householdId: UUID): Int =
-        (categoryJpaRepository.findAllByHouseholdId(householdId).maxOfOrNull { it.sheetRow } ?: -1) + 1
+        (categoryJpaRepository.findAllByHouseholdIdAndStatus(householdId, STATUS_ACTIVE)
+            .maxOfOrNull { it.sheetRow } ?: -1) + 1
 
     fun save(category: Category): Category {
         val entity = CategoryJpaEntity(
@@ -45,6 +56,8 @@ class CategoryRepository(
             priority = category.priority,
             keywords = objectMapper.valueToTree(category.keywords),
             isOther = category.isOther,
+            isDefault = category.isDefault,
+            status = category.status.name,
         )
         return toDomain(categoryJpaRepository.save(entity))
     }
@@ -58,6 +71,8 @@ class CategoryRepository(
         priority = entity.priority,
         keywords = readKeywords(entity),
         isOther = entity.isOther,
+        isDefault = entity.isDefault,
+        status = Category.Status.valueOf(entity.status),
     )
 
     private fun readKeywords(entity: CategoryJpaEntity): List<String> =

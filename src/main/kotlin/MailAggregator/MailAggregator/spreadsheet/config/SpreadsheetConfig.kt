@@ -1,6 +1,7 @@
 package MailAggregator.MailAggregator.spreadsheet.config
 
 import MailAggregator.MailAggregator.common.repository.CategoryRepository
+import MailAggregator.MailAggregator.common.repository.MonthCategoryLayoutRepository
 import MailAggregator.MailAggregator.spreadsheet.Authentication
 import MailAggregator.MailAggregator.spreadsheet.usecase.VerifyMonthSheetExistsUseCase
 import MailAggregator.MailAggregator.spreadsheet.usecases.GetSpendingsByDateUseCase
@@ -16,10 +17,12 @@ class SpreadsheetConfig {
         sheetRequester: SheetRequester,
         verifyMonthSheetExistsUseCase: VerifyMonthSheetExistsUseCase,
         categoryRepository: CategoryRepository,
+        monthCategoryLayoutRepository: MonthCategoryLayoutRepository,
     ) = GetSpendingsByDateUseCase(
         sheetRequester,
         verifyMonthSheetExistsUseCase,
         categoryRepository,
+        monthCategoryLayoutRepository,
     )
 
     @Bean
@@ -27,17 +30,23 @@ class SpreadsheetConfig {
         sheetRequester: SheetRequester,
         verifyMonthSheetExistsUseCase: VerifyMonthSheetExistsUseCase,
         categoryRepository: CategoryRepository,
+        monthCategoryLayoutRepository: MonthCategoryLayoutRepository,
     ) = UpdateSpendingsByDateUseCase(
         sheetRequester = sheetRequester,
         verifyMonthSheetExistsUseCase = verifyMonthSheetExistsUseCase,
         categoryRepository = categoryRepository,
+        monthCategoryLayoutRepository = monthCategoryLayoutRepository,
     )
 
     @Bean
     fun prepareTemplateSpreadsheetUseCase(
         sheetRequester: SheetRequester,
+        categoryRepository: CategoryRepository,
+        monthCategoryLayoutRepository: MonthCategoryLayoutRepository,
     ) = VerifyMonthSheetExistsUseCase(
-        sheetRequester,
+        sheetRequester = sheetRequester,
+        categoryRepository = categoryRepository,
+        monthCategoryLayoutRepository = monthCategoryLayoutRepository,
     )
 
     @Bean

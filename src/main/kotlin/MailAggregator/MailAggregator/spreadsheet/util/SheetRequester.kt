@@ -221,6 +221,35 @@ class SheetRequester(
         }
     }
 
+    /**
+     * Read a 2D block of cell contents as strings, preserving formulas verbatim (as `=...` text)
+     * so a subsequent write via [updateTableRange] (which uses `USER_ENTERED`) round-trips them
+     * back as formulas rather than resolved values.
+     *
+     * Rows shorter than the requested column span are padded with empty strings; rows past the
+     * end of the returned block are treated as fully empty. Callers know the exact rectangle
+     * they asked for and want it back with fixed dimensions.
+     */
+    fun readBlockRaw(
+        spreadsheetId: String,
+        rangeName: String,
+        expectedRows: Int,
+        expectedCols: Int,
+    ): List<List<Any>> {
+        val response = GoogleApiRequester.sendRequest {
+            sheets()
+                .values()
+                .get(spreadsheetId, rangeName)
+                .setValueRenderOption("FORMULA")
+                .execute()
+        }
+        val raw: List<List<Any>> = response.getValues() ?: emptyList()
+        return List(expectedRows) { rowIdx ->
+            val row = raw.getOrNull(rowIdx) ?: emptyList()
+            List(expectedCols) { colIdx -> row.getOrNull(colIdx) ?: "" }
+        }
+    }
+
     fun clearRange(spreadsheetId: String, rangeName: String) {
         GoogleApiRequester.sendRequest {
             sheets()

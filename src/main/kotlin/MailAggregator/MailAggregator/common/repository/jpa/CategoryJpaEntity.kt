@@ -38,6 +38,12 @@ data class CategoryJpaEntity(
     @Column(name = "is_other", nullable = false)
     val isOther: Boolean,
 
+    @Column(name = "is_default", nullable = false)
+    val isDefault: Boolean = false,
+
+    @Column(name = "status", nullable = false)
+    val status: String = "ACTIVE",
+
     @Column(name = "created_at", nullable = false, insertable = false, updatable = false)
     val createdAt: OffsetDateTime? = null,
 )
