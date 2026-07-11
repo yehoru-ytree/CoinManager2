@@ -6,6 +6,7 @@ import MailAggregator.MailAggregator.bank.repository.BankAccountRepository
 import MailAggregator.MailAggregator.bank.repository.TransactionRepository
 import MailAggregator.MailAggregator.bank.repository.TransactionStatusRepository
 import MailAggregator.MailAggregator.common.repository.CategoryRepository
+import MailAggregator.MailAggregator.common.repository.MonthCategoryLayoutRepository
 import MailAggregator.MailAggregator.common.usecases.AddCashTransactionUseCase
 import MailAggregator.MailAggregator.common.usecases.AddCategoryUseCase
 import MailAggregator.MailAggregator.common.usecases.CategorizeExpenseUseCase
@@ -59,9 +60,11 @@ class Config(
     @Bean
     fun addCategoryUseCase(
         categoryRepository: CategoryRepository,
+        monthCategoryLayoutRepository: MonthCategoryLayoutRepository,
         sheetRequester: SheetRequester,
     ) = AddCategoryUseCase(
         categoryRepository = categoryRepository,
+        monthCategoryLayoutRepository = monthCategoryLayoutRepository,
         sheetRequester = sheetRequester,
         zoneId = TIME_ZONE,
     )
@@ -69,10 +72,13 @@ class Config(
     @Bean
     fun removeCategoryUseCase(
         categoryRepository: CategoryRepository,
+        monthCategoryLayoutRepository: MonthCategoryLayoutRepository,
         sheetRequester: SheetRequester,
     ) = RemoveCategoryUseCase(
         categoryRepository = categoryRepository,
+        monthCategoryLayoutRepository = monthCategoryLayoutRepository,
         sheetRequester = sheetRequester,
+        zoneId = TIME_ZONE,
     )
 
     @Bean

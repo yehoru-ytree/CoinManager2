@@ -281,26 +281,36 @@ class PlainCommandHandler(
             .sortedBy { it.sheetRow }
         val rows = regular.chunked(3).map { chunk ->
             chunk.map { cat ->
-                InlineKeyboardButton(cat.displayName).callbackData("k|$transactionId|${cat.sheetRow}")
+                InlineKeyboardButton(cat.displayName).callbackData("k|$transactionId|${cat.id}")
             }.toTypedArray()
         }
         return InlineKeyboardMarkup(*rows.toTypedArray())
     }
 
+    /**
+     * Callback shape: `c|<txId>|<categoryId>` or `c|<txId>|IGNORE`.
+     *
+     * We resolve by UUID so soft-deleted or renumbered categories in the current template still
+     * resolve on an old prompt — the historical decision needs the right categoryId, not a
+     * position that might have shifted.
+     */
     private fun parseCallbackData(householdId: UUID, data: String): Parsed? {
         val parts = data.split('|')
         if (parts.firstOrNull() != "c" || parts.size != 3) return null
-        val sheetRow = parts[2].toIntOrNull() ?: return null
-        if (sheetRow == -1) return Parsed(parts[1], CategorizationBot.Decision.Ignore)
-        val category = categoryRepository.findBySheetRow(householdId, sheetRow) ?: return null
+        if (parts[2] == "IGNORE") return Parsed(parts[1], CategorizationBot.Decision.Ignore)
+        val categoryId = runCatching { UUID.fromString(parts[2]) }.getOrNull() ?: return null
+        val category = categoryRepository.findById(categoryId) ?: return null
+        if (category.householdId != householdId) return null
         return Parsed(parts[1], CategorizationBot.Decision.Category(category.id))
     }
 
+    /** Callback shape: `k|<txId>|<categoryId>`. Same UUID-first resolution as [parseCallbackData]. */
     private fun parseSaveKeywordCallback(householdId: UUID, data: String): SaveKeywordCallback? {
         val parts = data.split('|')
         if (parts.firstOrNull() != "k" || parts.size != 3) return null
-        val sheetRow = parts[2].toIntOrNull() ?: return null
-        val category = categoryRepository.findBySheetRow(householdId, sheetRow) ?: return null
+        val categoryId = runCatching { UUID.fromString(parts[2]) }.getOrNull() ?: return null
+        val category = categoryRepository.findById(categoryId) ?: return null
+        if (category.householdId != householdId) return null
         return SaveKeywordCallback(parts[1], category.id)
     }
 

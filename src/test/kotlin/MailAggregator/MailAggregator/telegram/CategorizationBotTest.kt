@@ -1465,7 +1465,7 @@ class CategorizationBotTest {
         }
 
         @Test
-        fun `sheet row = -1 dispatches Decision Ignore, clears keyboards on ALL household prompts, and sends the ignored log`() {
+        fun `IGNORE dispatches Decision Ignore, clears keyboards on ALL household prompts, and sends the ignored log`() {
             val chatId = 10002L
             val (_, household) = registerUser(chatId)
             val tx = tx(id = "tx-A", householdId = household.id)
@@ -1479,7 +1479,7 @@ class CategorizationBotTest {
             every { householdRepository.findHousehold(household.id) } returns household
             every { householdRepository.findUsersInHousehold(household.id) } returns emptyList()
 
-            feed(callbackUpdate(chatId, data = "c|tx-A|-1", attachedMessageId = 700))
+            feed(callbackUpdate(chatId, data = "c|tx-A|IGNORE", attachedMessageId = 700))
 
             verify(exactly = 1) { onDecision("tx-A", CategorizationBot.Decision.Ignore) }
             verify(exactly = 1) { gateway.editKeyboard(chatId, 500L, null) }
@@ -1493,24 +1493,25 @@ class CategorizationBotTest {
             val (_, household) = registerUser(chatId)
             val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
             every { transactionStatusRepository.findByTransactionId("tx-B") } returns null
-            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { categoryRepository.findById(chosen.id) } returns chosen
             every { telegramLogMessageRepository.findAllByTransactionId("tx-B") } returns emptyList()
             every { transactionRepository.get("tx-B") } returns Optional.of(tx(id = "tx-B", householdId = household.id))
             every { householdRepository.findHousehold(household.id) } returns household
             every { householdRepository.findUsersInHousehold(household.id) } returns emptyList()
 
-            feed(callbackUpdate(chatId, data = "c|tx-B|7", attachedMessageId = 700))
+            feed(callbackUpdate(chatId, data = "c|tx-B|${chosen.id}", attachedMessageId = 700))
 
             verify(exactly = 1) { onDecision("tx-B", CategorizationBot.Decision.Category(chosen.id)) }
         }
 
         @Test
-        fun `unknown sheet row (category lookup returns null) replies with badCallback and skips onDecision`() {
+        fun `unknown category id (findById returns null) replies with badCallback and skips onDecision`() {
             val chatId = 10004L
             val (_, household) = registerUser(chatId)
-            every { categoryRepository.findBySheetRow(household.id, 999) } returns null
+            val missingId = UUID.randomUUID()
+            every { categoryRepository.findById(missingId) } returns null
 
-            feed(callbackUpdate(chatId, data = "c|tx-C|999", attachedMessageId = 700))
+            feed(callbackUpdate(chatId, data = "c|tx-C|$missingId", attachedMessageId = 700))
 
             verify(exactly = 0) { onDecision(any(), any()) }
             verify(exactly = 1) { gateway.answerCallback("cb-700", any()) }
@@ -1521,10 +1522,10 @@ class CategorizationBotTest {
             val chatId = 10005L
             val (_, household) = registerUser(chatId)
             val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
-            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { categoryRepository.findById(chosen.id) } returns chosen
             every { transactionStatusRepository.findByTransactionId("tx-D") } returns TransactionStatus.EXECUTED
 
-            feed(callbackUpdate(chatId, data = "c|tx-D|7", attachedMessageId = 700))
+            feed(callbackUpdate(chatId, data = "c|tx-D|${chosen.id}", attachedMessageId = 700))
 
             verify(exactly = 0) { onDecision(any(), any()) }
             verify(exactly = 1) { gateway.editKeyboard(chatId, 700L, null) }
@@ -1536,10 +1537,10 @@ class CategorizationBotTest {
             val chatId = 10006L
             val (_, household) = registerUser(chatId)
             val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
-            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { categoryRepository.findById(chosen.id) } returns chosen
             every { transactionStatusRepository.findByTransactionId("tx-E") } returns TransactionStatus.IGNORED
 
-            feed(callbackUpdate(chatId, data = "c|tx-E|7", attachedMessageId = 700))
+            feed(callbackUpdate(chatId, data = "c|tx-E|${chosen.id}", attachedMessageId = 700))
 
             verify(exactly = 0) { onDecision(any(), any()) }
         }
@@ -1549,7 +1550,7 @@ class CategorizationBotTest {
             val chatId = 10007L
             every { householdRepository.findUserByChatId(chatId) } returns null
 
-            feed(callbackUpdate(chatId, data = "c|tx-F|-1", attachedMessageId = 700))
+            feed(callbackUpdate(chatId, data = "c|tx-F|IGNORE", attachedMessageId = 700))
 
             verify(exactly = 1) { gateway.answerCallback("cb-700", any()) }
             verify(exactly = 0) { onDecision(any(), any()) }
@@ -1575,10 +1576,10 @@ class CategorizationBotTest {
             val chatId = 11002L
             val (_, household) = registerUser(chatId)
             val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
-            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { categoryRepository.findById(chosen.id) } returns chosen
             every { transactionRepository.get("tx-Z") } returns Optional.empty()
 
-            feed(callbackUpdate(chatId, data = "k|tx-Z|7", attachedMessageId = 800))
+            feed(callbackUpdate(chatId, data = "k|tx-Z|${chosen.id}", attachedMessageId = 800))
 
             verify(exactly = 0) { saveKeywordUseCase(any(), any()) }
             verify(exactly = 1) { gateway.answerCallback("cb-800", any()) }
@@ -1589,11 +1590,11 @@ class CategorizationBotTest {
             val chatId = 11003L
             val (_, household) = registerUser(chatId)
             val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
-            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { categoryRepository.findById(chosen.id) } returns chosen
             every { transactionRepository.get("tx-S") } returns Optional.of(tx(id = "tx-S", householdId = household.id, description = "Coffee shop"))
             every { saveKeywordUseCase(chosen.id, "Coffee shop") } returns SaveKeywordUseCase.Result.Saved(chosen, "Coffee\\ shop")
 
-            feed(callbackUpdate(chatId, data = "k|tx-S|7", attachedMessageId = 800))
+            feed(callbackUpdate(chatId, data = "k|tx-S|${chosen.id}", attachedMessageId = 800))
 
             verify(exactly = 1) { saveKeywordUseCase(chosen.id, "Coffee shop") }
             verify(exactly = 1) { gateway.editKeyboard(chatId, 800L, null) }
@@ -1607,11 +1608,11 @@ class CategorizationBotTest {
             val chatId = 11004L
             val (_, household) = registerUser(chatId)
             val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
-            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { categoryRepository.findById(chosen.id) } returns chosen
             every { transactionRepository.get("tx-P") } returns Optional.of(tx(id = "tx-P", householdId = household.id, description = "Coffee"))
             every { saveKeywordUseCase(chosen.id, "Coffee") } returns SaveKeywordUseCase.Result.AlreadyPresent(chosen, "Coffee")
 
-            feed(callbackUpdate(chatId, data = "k|tx-P|7", attachedMessageId = 800))
+            feed(callbackUpdate(chatId, data = "k|tx-P|${chosen.id}", attachedMessageId = 800))
 
             verify(exactly = 1) { gateway.answerCallback("cb-800", any()) }
             verify(atLeast = 1) { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = null) }
@@ -1622,11 +1623,11 @@ class CategorizationBotTest {
             val chatId = 11005L
             val (_, household) = registerUser(chatId)
             val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
-            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { categoryRepository.findById(chosen.id) } returns chosen
             every { transactionRepository.get("tx-N") } returns Optional.of(tx(id = "tx-N", householdId = household.id, description = "d"))
             every { saveKeywordUseCase(chosen.id, "d") } returns SaveKeywordUseCase.Result.CategoryNotFound
 
-            feed(callbackUpdate(chatId, data = "k|tx-N|7", attachedMessageId = 800))
+            feed(callbackUpdate(chatId, data = "k|tx-N|${chosen.id}", attachedMessageId = 800))
 
             verify(exactly = 1) { gateway.answerCallback("cb-800", any()) }
         }
@@ -1636,11 +1637,11 @@ class CategorizationBotTest {
             val chatId = 11006L
             val (_, household) = registerUser(chatId)
             val chosen = category(household.id, "Coffee").copy(sheetRow = 7)
-            every { categoryRepository.findBySheetRow(household.id, 7) } returns chosen
+            every { categoryRepository.findById(chosen.id) } returns chosen
             every { transactionRepository.get("tx-M") } returns Optional.of(tx(id = "tx-M", householdId = household.id, description = ""))
             every { saveKeywordUseCase(chosen.id, "") } returns SaveKeywordUseCase.Result.EmptyKeyword
 
-            feed(callbackUpdate(chatId, data = "k|tx-M|7", attachedMessageId = 800))
+            feed(callbackUpdate(chatId, data = "k|tx-M|${chosen.id}", attachedMessageId = 800))
 
             verify(exactly = 1) { gateway.answerCallback("cb-800", any()) }
         }
