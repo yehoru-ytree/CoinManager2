@@ -1,0 +1,60 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: bankaggregator
+          POSTGRES_USER: appuser
+          POSTGRES_PASSWORD: ci_postgres_pw
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U appuser -d bankaggregator"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Build
+        run: ./gradlew build --no-daemon --stacktrace
+        env:
+          # DB — mirrors docker-compose so Flyway/JPA behave identically to local.
+          POSTGRES_PASSWORD: ci_postgres_pw
+          # Dummy values so Spring placeholders resolve at context load. No real
+          # credentials needed: no bean makes external calls during the test boot,
+          # and the Telegram long-poller fails silently into its error callback.
+          MONOBANK_TOKEN: ci-dummy
+          MONOBANK_ACCOUNT_ID: ci-dummy
+          GOOGLE_SHEET_ID: ci-dummy
+          TEMPLATE_SPREADSHEET_ID: ci-dummy
+          TEMPLATE_SHEET_TITLE: Template
+          TELEGRAM_BOT_TOKEN: ci-dummy
+          # Must be numeric — BootstrapHouseholdRunner does ownerChatId.toLong().
+          TELEGRAM_OWNER_CHAT_ID: "1"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: build/reports/tests/test
+          if-no-files-found: ignore
