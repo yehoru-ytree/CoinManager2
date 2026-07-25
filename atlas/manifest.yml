@@ -1,0 +1,21 @@
+# atlas Scan Manifest — CoinManager2
+# Tracks what was scanned and when for incremental re-runs.
+
+scan_metadata:
+  last_run: 2026-07-24T00:00:00Z
+  total_repos: 1
+  total_clusters: 1
+  total_standards: 6
+
+clusters:
+  coinmanager2-single:
+    repos: [CoinManager2]
+    sampled: [CoinManager2]
+    verified: []  # single-repo scan — cross-repo verification not applicable
+
+repos:
+  CoinManager2:
+    path: /Users/yehorus/Desktop/Project/Home/CoinManager2
+    last_scanned: 2026-07-24T00:00:00Z
+    last_commit: 9bc95bab05f983fda2884dd8679d4a5ce67f3543
+    cluster: coinmanager2-single

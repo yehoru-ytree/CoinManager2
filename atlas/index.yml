@@ -1,0 +1,26 @@
+# atlas Standards Index — CoinManager2
+# Authoring contract: descriptions are retrieval triggers for an agent scanning
+# this index. Formula = task-trigger + concrete owned symbols. One line per
+# entry, ~55 words max, valid double-quoted YAML string.
+
+global:
+  kotlin-spring-conventions:
+    description: "Writing or editing any Kotlin in this repo: Kotlin 2.2 on JVM 21, Spring Boot, Gradle Kotlin DSL (build.gradle.kts is the build of record, not pom.xml), -Xjsr305=strict, KDoc doc-comments on interfaces / non-obvious flows are the house style, LocalDateTime/Instant per existing usage, package root MailAggregator.MailAggregator."
+    file: standards/global/kotlin-spring-conventions.md
+
+backend:
+  hexagonal-persistence-pattern:
+    description: "Adding or changing persistence for a domain type (bank, common, household, telegram): a domain-level @Service XRepository wraps a Spring Data XJpaRepository under repository/jpa/ and maps with private toEntity() / toDomain() helpers; controllers and use cases depend on the @Service repository, never on the JpaRepository directly."
+    file: standards/backend/hexagonal-persistence-pattern.md
+  manual-bean-wiring:
+    description: "Adding a new use case or changing its dependencies: domain use cases are plain classes constructed as explicit @Bean factory methods in common/config/Config.kt, not component-scanned; BankApi implementations are collected as List<BankApi> and keyed via associateBy(BankApi::bankType)."
+    file: standards/backend/manual-bean-wiring.md
+  bank-integration-pattern:
+    description: "Adding support for a new bank or changing transaction fetching: implement BankApi (val bankType, getStatements(account, householdId, from, to)) in the bank's own package, add a BankType enum entry, and let the List<BankApi> wiring dispatch by bankType. BankType.fromString resolves the DB discriminator string."
+    file: standards/backend/bank-integration-pattern.md
+  telegram-wizard-pattern:
+    description: "Adding or changing a Telegram interactive flow: implement the Wizard interface (hasState / resetState / tryHandleMidFlow / matchesStartTrigger / start / tryHandleCallback), register it as a bean; requiresRegistration defaults to true (household-gated), CreateHousehold overrides it to false. UpdateRouter drives long-polling from a @PostConstruct."
+    file: standards/backend/telegram-wizard-pattern.md
+  flyway-migrations:
+    description: "Adding a database migration: SQL files under src/main/resources/db/migration/ named V{n}__Description.sql, monotonic n, applied by Flyway into the bankaggregator schema (ddl-auto=none, Flyway owns the schema). Never edit a merged migration — add the next V{n+1}."
+    file: standards/backend/flyway-migrations.md
