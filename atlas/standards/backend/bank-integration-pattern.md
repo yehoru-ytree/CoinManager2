@@ -3,20 +3,30 @@ domain: backend
 scope: repo-specific
 repos_observed: 1
 confidence: observed
-last_scanned: 2026-07-24
+last_scanned: 2026-07-26
 evidence:
   - src/main/kotlin/MailAggregator/MailAggregator/bank/BankApi.kt
   - src/main/kotlin/MailAggregator/MailAggregator/bank/BankType.kt
   - src/main/kotlin/MailAggregator/MailAggregator/bank/BankAccount.kt
   - src/main/kotlin/MailAggregator/MailAggregator/monobank/api/MonobankApi.kt
+  - src/main/kotlin/MailAggregator/MailAggregator/privatbank/email/PrivatEmailIngestor.kt
 why: confirmed
-occurrences: 4
+occurrences: 5
 origin: repo-choice
 ---
 
 ## Bank integration pattern
 
-Fetching transactions is abstracted behind `bank/BankApi`:
+A `BankType` enum entry is the one thing **every** supported bank has — it is the
+discriminator persisted on `BankAccount.bankType` and resolved back (case-insensitive)
+by `BankType.fromString`, which `error()`s on an unknown value.
+
+Beyond that, banks integrate in **one of two styles**, depending on how the bank
+exposes transactions. Do not assume every bank implements `BankApi`.
+
+### Style 1 — pull (polled REST): implement `BankApi`
+
+Used when the bank offers an API we can poll (e.g. **Monobank**).
 
 ```kotlin
 interface BankApi {
@@ -25,21 +35,31 @@ interface BankApi {
 }
 ```
 
-**To add a new bank:**
+- Implement `BankApi` in the bank's own package (mirroring `monobank/`). The impl
+  receives the full `BankAccount`, so it uses whichever credentials it needs.
+- Register the implementation as a Spring bean. `Config.processIncomingBankTransactionsUseCase`
+  collects all `BankApi` beans as a `List<BankApi>` and keys them with
+  `associateBy(BankApi::bankType)`; `ScheduledTasks` drives the poll on
+  `monobank.poll-interval`. No change to the use case is needed for a new pull bank.
 
-1. Add an entry to the `BankType` enum (`bank/BankType.kt`). The enum value's
-   `.name` is the discriminator persisted on `BankAccount.bankType`;
-   `BankType.fromString` resolves it back (case-insensitive) and `error()`s on
-   an unknown value.
-2. Implement `BankApi` in the bank's **own package** (mirroring `monobank/`).
-   The implementation receives the full `BankAccount`, so it may use whichever
-   credentials it needs (`token`, `accountId`, `clientId`).
-3. Register the implementation as a Spring bean. The `List<BankApi>` collection
-   wiring (see manual-bean-wiring) picks it up and dispatches accounts of that
-   `bankType` to it — no change to the polling use case.
+### Style 2 — push (inbound notifications): a dedicated ingestor
 
-**Do not** branch on `bankType` with `when` inside shared code to special-case a
-bank; put bank-specific behaviour in that bank's `BankApi` implementation.
-`getStatements` returns bank-agnostic `Transaction` values — mapping from the
-bank's own DTOs happens inside the implementation's package (e.g.
-`monobank/api/MonoStatementMapper`).
+Used when the bank has no pollable API and instead pushes notifications we
+receive out-of-band (e.g. **PrivatBank**, whose card notifications arrive as
+forwarded emails). These banks have a `BankType` entry **but no `BankApi`
+implementation**.
+
+- Add a `@Component` ingestor (see `PrivatEmailIngestor`) that is `@Scheduled`
+  on its own interval (`email.imap.poll-interval`), parses the inbound source
+  (`PrivatEmailParser`), and feeds the results into the **same** pipeline via
+  `ProcessIncomingBankTransactionsUseCase.processTransactionsForHousehold(...)`.
+- The `BankType` entry (e.g. `PRIVATBANK`) is still used as the discriminator to
+  look up the owning `BankAccount` (`findByTypeAndAccountId` / `findByTypeAndToken`).
+
+### Common rules
+
+- Put bank-specific behaviour inside that bank's package/ingestor — do **not**
+  branch on `bankType` with `when` in shared code.
+- Whichever style, transactions enter the pipeline as bank-agnostic `Transaction`
+  values; mapping from the bank's own DTOs/emails happens inside that bank's
+  package (e.g. `monobank/api/MonoStatementMapper`, `PrivatEmailParser`).
