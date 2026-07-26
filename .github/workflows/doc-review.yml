@@ -39,47 +39,57 @@ jobs:
           GH_TOKEN=${CI_GIT_TOKEN}"
           BODY=$(jq -n --arg text "$TEXT" '{text: $text}')
 
-          RESP=$(curl -sS -o /tmp/fire-body.json -w '%{http_code}' -X POST "$ROUTINE_TRIGGER_URL" \
+          CODE=$(curl -sS -o /tmp/fire-body.json -w '%{http_code}' -X POST "$ROUTINE_TRIGGER_URL" \
             -H "Authorization: Bearer ${CLAUDE_CODE_OAUTH_TOKEN}" \
             -H "anthropic-beta: experimental-cc-routine-2026-04-01" \
             -H "anthropic-version: 2023-06-01" \
             -H "Content-Type: application/json" \
             -d "$BODY")
-          echo "fire HTTP ${RESP}"
-          test "${RESP}" -ge 200 -a "${RESP}" -lt 300
+          echo "fire HTTP ${CODE}"
+          test "${CODE}" -ge 200 -a "${CODE}" -lt 300
           SESSION_URL=$(jq -r '.claude_code_session_url // empty' /tmp/fire-body.json)
           rm -f /tmp/fire-body.json
           [ -n "$SESSION_URL" ] && echo "session: $SESSION_URL" || true
 
-          # --- 2. Mark the commit pending so the PR shows "waiting" while the routine runs. ---
+          # --- 2. Mark the commit pending (GITHUB_TOKEN — the runner is outside the
+          #        routine's proxy, so it can write statuses; the routine cannot). ---
           if [ -n "$SESSION_URL" ]; then TARGET=(-f "target_url=$SESSION_URL"); else TARGET=(); fi
           gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
             -f state=pending -f context="$CONTEXT" -f "description=review in progress" "${TARGET[@]}" >/dev/null
 
-          # --- 3. Poll up to 5 minutes for the routine to flip the status. ---
+          # --- 3. Poll PR comments up to 5 minutes for the routine's verdict marker
+          #        for THIS head_sha: <!-- atlas-gate verdict=<fail|pass|skip> head=<sha> -->
           DEADLINE=$((SECONDS + 300))
           VERDICT=""
           while [ "$SECONDS" -lt "$DEADLINE" ]; do
-            STATE=$(gh api "repos/$REPO/commits/$HEAD_SHA/status" \
-              --jq ".statuses[] | select(.context==\"$CONTEXT\") | .state" 2>/dev/null | tail -1 || true)
-            if [ -n "${STATE:-}" ] && [ "$STATE" != "pending" ]; then VERDICT="$STATE"; break; fi
+            VERDICT=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" --jq '.[].body' 2>/dev/null \
+              | grep -oE "atlas-gate verdict=[a-z]+ head=$HEAD_SHA" | tail -1 \
+              | sed -E 's/.*verdict=([a-z]+).*/\1/' || true)
+            [ -n "${VERDICT:-}" ] && break
             sleep 15
           done
 
-          # --- 4. Verdict → job result. ---
-          if [ "$VERDICT" = "success" ]; then
-            echo "::notice::atlas-conformance: reviewed, no blocking findings"
-            exit 0
-          fi
-          if [ "$VERDICT" = "failure" ]; then
-            echo "::error::atlas-conformance: documentation drift found — see the PR comments"
-            exit 1
-          fi
-
-          # --- 5. Timeout: do NOT fail. Pass with a note and a green status. ---
-          echo "::warning::atlas-conformance did not respond within 5 minutes — gate skipped (not blocking)"
-          gh pr comment "$PR_NUMBER" -R "$REPO" \
-            --body "[atlas-conformance-gate] ⏱ Routine did not respond within 5 minutes — gate skipped, merge not blocked.${SESSION_URL:+ Session: $SESSION_URL}"
-          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
-            -f state=success -f context="$CONTEXT" -f "description=timed out after 5m — not blocking" >/dev/null
-          exit 0
+          # --- 4. Verdict → status + job result. ---
+          case "$VERDICT" in
+            fail)
+              gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
+                -f state=failure -f context="$CONTEXT" -f "description=documentation drift — see PR comments" >/dev/null
+              echo "::error::atlas-conformance: documentation drift found — see the PR comments"
+              exit 1
+              ;;
+            pass|skip)
+              gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
+                -f state=success -f context="$CONTEXT" -f "description=reviewed — no blocking findings ($VERDICT)" >/dev/null
+              echo "::notice::atlas-conformance: $VERDICT"
+              exit 0
+              ;;
+            *)
+              # Timeout: do NOT fail. Pass with a note and a green status.
+              echo "::warning::atlas-conformance did not respond within 5 minutes — gate skipped (not blocking)"
+              gh pr comment "$PR_NUMBER" -R "$REPO" \
+                --body "[atlas-conformance-gate] ⏱ Routine did not respond within 5 minutes — gate skipped, merge not blocked.${SESSION_URL:+ Session: $SESSION_URL}"
+              gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
+                -f state=success -f context="$CONTEXT" -f "description=timed out after 5m — not blocking" >/dev/null
+              exit 0
+              ;;
+          esac
