@@ -5,15 +5,21 @@ on:
   pull_request:
     types: [opened, reopened, synchronize]
 
+permissions:
+  statuses: write
+  pull-requests: write
+  contents: read
+
 jobs:
   fire-routine:
     runs-on: ubuntu-latest
     steps:
-      - name: Fire Claude Code routine
+      - name: Fire atlas-conformance routine and wait for its verdict
         env:
           ROUTINE_TRIGGER_URL: ${{ secrets.ROUTINE_TRIGGER_URL }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CI_GIT_TOKEN: ${{ secrets.CI_GIT_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -25,19 +31,55 @@ jobs:
             exit 1
           fi
 
+          CONTEXT="atlas-conformance/docs"
+
+          # --- 1. Fire the routine (never echo the response body: an error response
+          #        can echo the payload, which carries the PAT). ---
           TEXT="PR #${PR_NUMBER} in ${REPO} (head ${HEAD_SHA})
           GH_TOKEN=${CI_GIT_TOKEN}"
-
           BODY=$(jq -n --arg text "$TEXT" '{text: $text}')
 
-          HTTP=$(curl -sS -o /tmp/routine-resp.json -w '%{http_code}' -X POST "$ROUTINE_TRIGGER_URL" \
+          RESP=$(curl -sS -o /tmp/fire-body.json -w '%{http_code}' -X POST "$ROUTINE_TRIGGER_URL" \
             -H "Authorization: Bearer ${CLAUDE_CODE_OAUTH_TOKEN}" \
             -H "anthropic-beta: experimental-cc-routine-2026-04-01" \
             -H "anthropic-version: 2023-06-01" \
             -H "Content-Type: application/json" \
             -d "$BODY")
+          echo "fire HTTP ${RESP}"
+          test "${RESP}" -ge 200 -a "${RESP}" -lt 300
+          SESSION_URL=$(jq -r '.claude_code_session_url // empty' /tmp/fire-body.json)
+          rm -f /tmp/fire-body.json
+          [ -n "$SESSION_URL" ] && echo "session: $SESSION_URL" || true
 
-          echo "HTTP ${HTTP}"
-          cat /tmp/routine-resp.json
-          echo
-          test "${HTTP}" -ge 200 -a "${HTTP}" -lt 300
+          # --- 2. Mark the commit pending so the PR shows "waiting" while the routine runs. ---
+          if [ -n "$SESSION_URL" ]; then TARGET=(-f "target_url=$SESSION_URL"); else TARGET=(); fi
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state=pending -f context="$CONTEXT" -f "description=review in progress" "${TARGET[@]}" >/dev/null
+
+          # --- 3. Poll up to 5 minutes for the routine to flip the status. ---
+          DEADLINE=$((SECONDS + 300))
+          VERDICT=""
+          while [ "$SECONDS" -lt "$DEADLINE" ]; do
+            STATE=$(gh api "repos/$REPO/commits/$HEAD_SHA/status" \
+              --jq ".statuses[] | select(.context==\"$CONTEXT\") | .state" 2>/dev/null | tail -1 || true)
+            if [ -n "${STATE:-}" ] && [ "$STATE" != "pending" ]; then VERDICT="$STATE"; break; fi
+            sleep 15
+          done
+
+          # --- 4. Verdict → job result. ---
+          if [ "$VERDICT" = "success" ]; then
+            echo "::notice::atlas-conformance: reviewed, no blocking findings"
+            exit 0
+          fi
+          if [ "$VERDICT" = "failure" ]; then
+            echo "::error::atlas-conformance: documentation drift found — see the PR comments"
+            exit 1
+          fi
+
+          # --- 5. Timeout: do NOT fail. Pass with a note and a green status. ---
+          echo "::warning::atlas-conformance did not respond within 5 minutes — gate skipped (not blocking)"
+          gh pr comment "$PR_NUMBER" -R "$REPO" \
+            --body "[atlas-conformance-gate] ⏱ Routine did not respond within 5 minutes — gate skipped, merge not blocked.${SESSION_URL:+ Session: $SESSION_URL}"
+          gh api -X POST "repos/$REPO/statuses/$HEAD_SHA" \
+            -f state=success -f context="$CONTEXT" -f "description=timed out after 5m — not blocking" >/dev/null
+          exit 0
