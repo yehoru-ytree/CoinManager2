@@ -45,7 +45,13 @@ jobs:
           test "${CODE}" -ge 200 -a "${CODE}" -lt 300
           SESSION_URL=$(jq -r '.claude_code_session_url // empty' /tmp/fire-body.json)
           rm -f /tmp/fire-body.json
-          [ -n "$SESSION_URL" ] && echo "session: $SESSION_URL" || true
+          # Surface the session URL as a run annotation so its token/cost usage is
+          # one click away in the Anthropic Console (the routine can't self-report tokens).
+          if [ -n "$SESSION_URL" ]; then
+            echo "::notice title=atlas-conformance session::$SESSION_URL"
+          else
+            echo "::warning::fire response had no claude_code_session_url"
+          fi
 
           # --- 2. Poll PR comments up to 5 minutes for the routine's verdict marker
           #        for THIS head_sha: <!-- atlas-gate verdict=<fail|pass|skip> head=<sha> -->
