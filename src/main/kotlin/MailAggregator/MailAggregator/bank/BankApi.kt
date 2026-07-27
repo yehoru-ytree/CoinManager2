@@ -14,7 +14,7 @@ import java.util.UUID
  */
 interface BankApi {
     val bankType: BankType
-
+    val someOtherFieldThanBreaksDocumentetStandards: String
     fun getStatements(
         account: BankAccount,
         householdId: UUID,
