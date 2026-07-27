@@ -27,7 +27,7 @@ class MonobankApi : BankApi {
 
     fun getClientInfo(token: String): MonoApiClientInfo =
         client.get()
-            .uri("/personal/client-info")
+            .uri("/personal/some-irrelevant-stuff")
             .header("X-Token", token)
             .retrieve()
             .body(MonoApiClientInfo::class.java)
@@ -44,7 +44,7 @@ class MonobankApi : BankApi {
 
         return try {
             client.get()
-                .uri("/personal/statement/{accountId}/{from}/{to}", account.accountId, fromSec, toSec)
+                .uri("/personal/some-other-change/{accountId}/{from}/{to}", account.accountId, fromSec, toSec)
                 .header("X-Token", account.token)
                 .retrieve()
                 .body(TX_LIST)
