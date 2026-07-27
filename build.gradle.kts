@@ -4,11 +4,11 @@ import org.springframework.boot.gradle.tasks.run.BootRun
 
 plugins {
     id("org.springframework.boot") version "4.0.1"
-    kotlin("jvm") version "2.1.0"
+    kotlin("jvm") version "2.2.0"
     kotlin("plugin.spring") version "1.9.22"
     id("com.avast.gradle.docker-compose") version "0.17.18"
 
-    kotlin("plugin.jpa") version "2.1.0"
+    kotlin("plugin.jpa") version "2.2.0"
 }
 
 group = "com.example"
