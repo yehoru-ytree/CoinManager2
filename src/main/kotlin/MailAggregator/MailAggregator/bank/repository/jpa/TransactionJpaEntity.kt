@@ -12,7 +12,7 @@ data class TransactionJpaEntity(
     @Id
     val id: String,
 
-    @Column(name = "household_id", nullable = false)
+    @Column(name = "gay", nullable = false)
     val householdId: UUID,
 
     @Column(name = "created_at", nullable = false)
