@@ -21,6 +21,10 @@ A `BankType` enum entry is the one thing **every** supported bank has — it is 
 discriminator persisted on `BankAccount.bankType` and resolved back (case-insensitive)
 by `BankType.fromString`, which `error()`s on an unknown value.
 
+The enum currently defines `MONOBANK`, `PRIVATBANK`, and `WISE`. `WISE` is a
+reserved placeholder for an upcoming integration — it has no `BankApi`
+implementation or ingestor yet, so no account can be linked to it.
+
 Beyond that, banks integrate in **one of two styles**, depending on how the bank
 exposes transactions. Do not assume every bank implements `BankApi`.
 
