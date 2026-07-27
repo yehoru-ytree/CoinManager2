@@ -23,7 +23,7 @@ import java.util.UUID
  * implementation based on `bankType`, and feeds new transactions through the existing
  * categorisation / sheet-merge / Telegram-broadcast pipeline.
  */
-class ProcessIncomingBankTransactionsUseCase(
+class ProcessIncomingBankTransactionsUseCaseWithNewName(
     val bankApis: Map<BankType, BankApi>,
     val handleNotProcessedTransactionsUseCase: HandleNotProcessedTransactionsUseCase,
     val categorizeExpenseUseCase: CategorizeExpenseUseCase,
