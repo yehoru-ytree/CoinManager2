@@ -35,13 +35,19 @@ jobs:
           GH_TOKEN=${CI_GIT_TOKEN}"
           BODY=$(jq -n --arg text "$TEXT" '{text: $text}')
 
-          CODE=$(curl -sS -o /tmp/fire-body.json -w '%{http_code}' -X POST "$ROUTINE_TRIGGER_URL" \
+          CODE=$(curl -sS -D /tmp/fire-headers.txt -o /tmp/fire-body.json -w '%{http_code}' -X POST "$ROUTINE_TRIGGER_URL" \
             -H "Authorization: Bearer ${CLAUDE_CODE_OAUTH_TOKEN}" \
             -H "anthropic-beta: experimental-cc-routine-2026-04-01" \
             -H "anthropic-version: 2023-06-01" \
             -H "Content-Type: application/json" \
             -d "$BODY")
           echo "fire HTTP ${CODE}"
+          if [ "${CODE}" -lt 200 ] || [ "${CODE}" -ge 300 ]; then
+            echo "--- fire non-2xx; rate-limit response headers (safe — no secrets in headers) ---"
+            grep -iE '^(retry-after|anthropic-ratelimit|x-ratelimit|ratelimit|anthropic-request-id):' /tmp/fire-headers.txt \
+              || echo "(no retry-after / ratelimit headers present)"
+          fi
+          rm -f /tmp/fire-headers.txt
           test "${CODE}" -ge 200 -a "${CODE}" -lt 300
           SESSION_URL=$(jq -r '.claude_code_session_url // empty' /tmp/fire-body.json)
           rm -f /tmp/fire-body.json
