@@ -2,8 +2,9 @@ package MailAggregator.MailAggregator.common.usecases
 
 import MailAggregator.MailAggregator.bank.Transaction
 import MailAggregator.MailAggregator.bank.TransactionStatus
-import MailAggregator.MailAggregator.bank.repository.TransactionRepository
 import MailAggregator.MailAggregator.bank.repository.TransactionStatusRepository
+import MailAggregator.MailAggregator.bank.repository.jpa.TransactionJpaEntity
+import MailAggregator.MailAggregator.bank.repository.jpa.TransactionJpaRepository
 import java.time.Instant
 import java.util.UUID
 
@@ -17,7 +18,7 @@ import java.util.UUID
  * route it to a category.
  */
 class AddCashTransactionUseCase(
-    private val transactionRepository: TransactionRepository,
+    private val transactionJpaRepository: TransactionJpaRepository,
     private val transactionStatusRepository: TransactionStatusRepository,
 ) {
     fun add(householdId: UUID, amountMajor: Double): Transaction {
@@ -33,7 +34,19 @@ class AddCashTransactionUseCase(
             comment = null,
             counterName = null,
         )
-        transactionRepository.save(listOf(tx))
+        transactionJpaRepository.save(
+            TransactionJpaEntity(
+                id = tx.id,
+                householdId = tx.householdId,
+                createdAt = tx.createdAt,
+                description = tx.description,
+                time = tx.time,
+                amount = tx.amount,
+                currencyCode = tx.currencyCode,
+                comment = tx.comment,
+                counterName = tx.counterName,
+            )
+        )
         transactionStatusRepository.save(mapOf(tx.id to TransactionStatus.PENDING_APPROVAL))
         return tx
     }
