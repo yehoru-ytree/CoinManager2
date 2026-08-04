@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS bankaggregator.month_category_layout (
     month        int  NOT NULL,
     category_id  uuid NOT NULL REFERENCES bankaggregator.category   (id) ON DELETE CASCADE,
     row_offset   int  NOT NULL,
+    note         text,
     PRIMARY KEY (household_id, year, month, category_id),
     UNIQUE (household_id, year, month, row_offset)
 );
