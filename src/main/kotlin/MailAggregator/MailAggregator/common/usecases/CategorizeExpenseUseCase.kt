@@ -39,26 +39,60 @@ class CategorizeExpenseUseCase(
         val amountPredicate: (Long) -> Boolean = { true },
     )
 
+    /** A keyword and its compiled form. The raw string is what's stored in `Category.keywords`. */
+    private data class Pattern(val raw: String, val regex: Regex)
+
     private data class Rule(
         val category: Category,
         val priority: Int,
-        val patterns: List<Regex>,
+        val patterns: List<Pattern>,
+        /** True for a [SPECIAL_RULES] entry — lives in code, so it can't be edited away from the bot. */
+        val fromCode: Boolean,
         val amountPredicate: (Long) -> Boolean = { true },
     )
+
+    /**
+     * Why a transaction landed where it did: the category it was filed under and the keyword that
+     * matched. [fromCode] marks a [SPECIAL_RULES] entry — it isn't in `Category.keywords`, so
+     * removing it needs a code change rather than a bot command.
+     *
+     * A null explanation means no rule matched and the transaction fell through to OTHER.
+     */
+    data class Explanation(val category: Category, val keyword: String, val fromCode: Boolean)
 
     operator fun invoke(householdId: UUID, txs: List<Transaction>): Map<String, UUID> {
         if (txs.isEmpty()) return emptyMap()
 
         val categories = categoryRepository.findAll(householdId)
-        val byName = categories.associateBy { it.name }
         val other = categories.first { it.isOther }
+        val rules = buildRules(categories)
+
+        return txs.associate { tx -> tx.id to (match(tx, rules)?.category ?: other).id }
+    }
+
+    /**
+     * Re-run the rules over [tx] and report which one matched, without touching the sheet or any
+     * status. Used by the recategorisation flow to tell the user *why* a transaction was filed
+     * where it was, and to offer deleting the offending keyword.
+     *
+     * Note this reflects the keyword set as it stands **now**, not as it stood when the
+     * transaction was originally categorised — a keyword edited since then changes the answer.
+     */
+    fun explain(householdId: UUID, tx: Transaction): Explanation? {
+        val rules = buildRules(categoryRepository.findAll(householdId))
+        return match(tx, rules)
+    }
+
+    private fun buildRules(categories: List<Category>): List<Rule> {
+        val byName = categories.associateBy { it.name }
 
         val specialRules: List<Rule> = SPECIAL_RULES.mapNotNull { sr ->
             val cat = byName[sr.categoryName] ?: return@mapNotNull null
             Rule(
                 category = cat,
                 priority = sr.priority,
-                patterns = sr.rawPatterns.map { Regex(it, RegexOption.IGNORE_CASE) },
+                patterns = sr.rawPatterns.map { compile(it) },
+                fromCode = true,
                 amountPredicate = sr.amountPredicate,
             )
         }
@@ -69,16 +103,17 @@ class CategorizeExpenseUseCase(
                 Rule(
                     category = it,
                     priority = it.priority,
-                    patterns = it.keywords.map { kw -> Regex(kw, RegexOption.IGNORE_CASE) },
+                    patterns = it.keywords.map(::compile),
+                    fromCode = false,
                 )
             }
 
-        val rules: List<Rule> = (specialRules + genericRules).sortedByDescending { it.priority }
-
-        return txs.associate { tx -> tx.id to categorize(tx, rules, other).id }
+        return (specialRules + genericRules).sortedByDescending { it.priority }
     }
 
-    private fun categorize(tx: Transaction, rules: List<Rule>, other: Category): Category {
+    private fun compile(raw: String): Pattern = Pattern(raw, Regex(raw, RegexOption.IGNORE_CASE))
+
+    private fun match(tx: Transaction, rules: List<Rule>): Explanation? {
         val text = normalize(
             buildString {
                 append(tx.description)
@@ -89,12 +124,12 @@ class CategorizeExpenseUseCase(
 
         val amountAbsMinor: Long = abs(tx.amount)
 
-        val matched = rules.firstOrNull { rule ->
-            rule.amountPredicate(amountAbsMinor) &&
-                rule.patterns.any { it.containsMatchIn(text) }
+        for (rule in rules) {
+            if (!rule.amountPredicate(amountAbsMinor)) continue
+            val hit = rule.patterns.firstOrNull { it.regex.containsMatchIn(text) } ?: continue
+            return Explanation(category = rule.category, keyword = hit.raw, fromCode = rule.fromCode)
         }
-
-        return matched?.category ?: other
+        return null
     }
 
     private fun normalize(raw: String): String =

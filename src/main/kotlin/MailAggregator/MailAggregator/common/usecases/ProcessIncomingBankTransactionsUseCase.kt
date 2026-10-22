@@ -99,13 +99,14 @@ class ProcessIncomingBankTransactionsUseCase(
                 continue
             }
 
-            sendAutoCategorizedLogs(
-                household,
-                day.value,
-                categorizedExpenses.filterValues { it != otherCategoryId },
-            )
+            val booked = categorizedExpenses.filterValues { it != otherCategoryId }
 
-            executeTransactionsUseCase(day.value)
+            sendAutoCategorizedLogs(household, day.value, booked)
+
+            // `booked` is what actually reached the sheet — stored alongside EXECUTED so the merge
+            // stays reversible. The OTHER ones carry no category: handleOtherExpensesUseCase flips
+            // them to PENDING_APPROVAL below.
+            executeTransactionsUseCase(day.value, booked)
         }
 
         handleOtherExpensesUseCase(

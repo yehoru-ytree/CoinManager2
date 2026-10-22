@@ -52,6 +52,22 @@ dispatches each update through the `Wizard` beans. A wizard's
 `requiresRegistration` flag gates it behind a linked household; `CreateHousehold`
 overrides it to `false` so a fresh chat can bootstrap.
 
+**Correcting a categorisation.** Replying «Удалить» to a transaction's log message
+runs `RecategorizeWizard`: it subtracts the amount from the category the
+transaction was booked into, offers to delete the keyword that caused the match
+(leaving it in place would send the next identical transaction to the same wrong
+place), and then hands the transaction back to `HandleOtherExpensesUseCase` — the
+same path an uncategorised transaction takes, so the standard category keyboard
+goes out to the whole household. Binding the description to the newly chosen
+category stays a separate, explicit «Сохранить».
+
+Reversing the merge needs to know where the money went, so `transaction_status`
+records the category alongside `EXECUTED` (V11). Rows written before that
+migration have no category — for those the wizard asks which one to subtract
+from. A match produced by `CategorizeExpenseUseCase.SPECIAL_RULES` lives in code
+rather than `Category.keywords`, so it is reported but cannot be removed from the
+bot.
+
 ## Configuration
 
 All runtime configuration comes from environment variables consumed in

@@ -56,6 +56,7 @@ class PlainCommandHandler(
     private val inviteTrigger: String by lazy { applyLocale("trigger.invite") }
     private val joinTrigger: String by lazy { applyLocale("trigger.join") }
     private val cancelTrigger: String by lazy { applyLocale("trigger.cancel") }
+    private val recategorizeTrigger: String by lazy { applyLocale("trigger.recategorize") }
     private val helpTriggers: Set<String> by lazy {
         applyLocale("trigger.help").split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
     }
@@ -121,6 +122,7 @@ class PlainCommandHandler(
                 cashTrigger,
                 saveKeywordTrigger,
                 cancelTrigger,
+                recategorizeTrigger,
             ),
         )
     }
