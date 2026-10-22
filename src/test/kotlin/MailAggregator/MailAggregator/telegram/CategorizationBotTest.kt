@@ -49,6 +49,8 @@ import io.mockk.junit5.MockKExtension
 import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
@@ -1673,6 +1675,39 @@ class CategorizationBotTest {
     }
 
     @Nested
+    inner class Help {
+
+        @Test
+        fun `help lists every trigger with no placeholder left unsubstituted`() {
+            val chatId = 13001L
+            registerUser(chatId)
+            val sent = slot<String>()
+            every { gateway.send(chatId, capture(sent), any(), any()) } returns 1L
+
+            feed(textUpdate(chatId, "помощь"))
+
+            val text = sent.captured
+            // A missing argument renders as a literal «{n}» rather than throwing, so the help
+            // text silently rots when a trigger is added. Assert on the rendered result.
+            assertFalse(Regex("\\{\\d}").containsMatchIn(text), "unsubstituted placeholder in help: $text")
+            listOf(
+                "Создать таблицу",
+                "Присоединиться",
+                "Привязать карту",
+                "Пригласить",
+                "Добавить категорию",
+                "Удалить категорию",
+                "Наличка",
+                "Сохранить",
+                "Забей",
+                "Удалить",
+            ).forEach { trigger ->
+                assertTrue(text.contains(trigger), "help does not mention «$trigger»")
+            }
+        }
+    }
+
+    @Nested
     inner class RecategorizeReply {
 
         /**
@@ -1698,6 +1733,20 @@ class CategorizationBotTest {
             every { gateway.send(chatId, any(), any(), any()) } returns 950L
             every { undoCategorizationUseCase(any(), any()) } returns true
             return transaction
+        }
+
+        @Test
+        fun `REPRO lowercase удалить on an auto-categorised log must not be saved as a comment`() {
+            val chatId = 12100L
+            val household = registerUser(chatId).second
+            val wrong = category(household.id, "Досуг")
+            val transaction = loggedTx(chatId, "tx-REPRO", household, storedCategory = wrong)
+            every { categorizeExpenseUseCase.explain(household.id, transaction) } returns null
+
+            feed(textUpdate(chatId, "удалить", messageId = 10, replyTo = botReplyPrompt(900)))
+
+            verify(exactly = 0) { handleTelegramCommentUseCase(any(), any(), any()) }
+            verify(exactly = 1) { undoCategorizationUseCase(transaction, wrong.id) }
         }
 
         @Test
