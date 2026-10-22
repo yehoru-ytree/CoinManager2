@@ -10,9 +10,13 @@ import MailAggregator.MailAggregator.common.Category
 import MailAggregator.MailAggregator.common.repository.CategoryRepository
 import MailAggregator.MailAggregator.common.usecases.AddCashTransactionUseCase
 import MailAggregator.MailAggregator.common.usecases.AddCategoryUseCase
+import MailAggregator.MailAggregator.common.usecases.CategorizeExpenseUseCase
+import MailAggregator.MailAggregator.common.usecases.HandleOtherExpensesUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramCommentUseCase
 import MailAggregator.MailAggregator.common.usecases.RemoveCategoryUseCase
+import MailAggregator.MailAggregator.common.usecases.RemoveKeywordUseCase
 import MailAggregator.MailAggregator.common.usecases.SaveKeywordUseCase
+import MailAggregator.MailAggregator.common.usecases.UndoCategorizationUseCase
 import MailAggregator.MailAggregator.household.BotUser
 import MailAggregator.MailAggregator.household.Household
 import MailAggregator.MailAggregator.household.repository.HouseholdRepository
@@ -33,6 +37,7 @@ import MailAggregator.MailAggregator.telegram.wizard.AddCardWizard
 import MailAggregator.MailAggregator.telegram.wizard.AddCategoryWizard
 import MailAggregator.MailAggregator.telegram.wizard.CashEntryWizard
 import MailAggregator.MailAggregator.telegram.wizard.CreateHouseholdWizard
+import MailAggregator.MailAggregator.telegram.wizard.RecategorizeWizard
 import MailAggregator.MailAggregator.telegram.wizard.RemoveCategoryWizard
 import com.pengrad.telegrambot.model.CallbackQuery
 import com.pengrad.telegrambot.model.Message
@@ -74,6 +79,10 @@ class CategorizationBotTest {
     private val authentication: Authentication = mockk(relaxed = true)
     private val monobankApi: MonobankApi = mockk(relaxed = true)
     private val onDecision: (String, CategorizationBot.Decision) -> Unit = mockk(relaxed = true)
+    private val categorizeExpenseUseCase: CategorizeExpenseUseCase = mockk(relaxed = true)
+    private val undoCategorizationUseCase: UndoCategorizationUseCase = mockk(relaxed = true)
+    private val removeKeywordUseCase: RemoveKeywordUseCase = mockk(relaxed = true)
+    private val handleOtherExpensesUseCase: HandleOtherExpensesUseCase = mockk(relaxed = true)
 
     private val messageSource = ResourceBundleMessageSource().apply {
         setBasename("messages")
@@ -137,6 +146,18 @@ class CategorizationBotTest {
             messageSource = messageSource,
             ingestEmail = "aggregator@example.com",
         )
+        val recategorizeWizard = RecategorizeWizard(
+            gateway = gateway,
+            transactionRepository = transactionRepository,
+            transactionStatusRepository = transactionStatusRepository,
+            telegramLogMessageRepository = telegramLogMessageRepository,
+            categoryRepository = categoryRepository,
+            categorizeExpenseUseCase = categorizeExpenseUseCase,
+            undoCategorizationUseCase = undoCategorizationUseCase,
+            removeKeywordUseCase = removeKeywordUseCase,
+            handleOtherExpensesUseCase = handleOtherExpensesUseCase,
+            messageSource = messageSource,
+        )
         val plainCommands = PlainCommandHandler(
             gateway = gateway,
             transactionRepository = transactionRepository,
@@ -156,7 +177,14 @@ class CategorizationBotTest {
             gateway = gateway,
             householdRepository = householdRepository,
             plainCommands = plainCommands,
-            wizards = listOf(createHouseholdWizard, addCategoryWizard, removeCategoryWizard, addCardWizard, cashEntryWizard),
+            wizards = listOf(
+                createHouseholdWizard,
+                addCategoryWizard,
+                removeCategoryWizard,
+                addCardWizard,
+                cashEntryWizard,
+                recategorizeWizard,
+            ),
             messageSource = messageSource,
         )
         router.startLongPolling() // registers the onUpdate lambda with the gateway (captured into onUpdateSlot)
@@ -1641,6 +1669,206 @@ class CategorizationBotTest {
             feed(callbackUpdate(chatId, data = "k|tx-M|${chosen.id}", attachedMessageId = 800))
 
             verify(exactly = 1) { gateway.answerCallback("cb-800", any()) }
+        }
+    }
+
+    @Nested
+    inner class RecategorizeReply {
+
+        /**
+         * Wire an already-processed transaction whose bot log message the user is about to reply
+         * to. [household] must come from a [registerUser] call in the test itself — the wizard
+         * resolves categories against the *user's* household, so both have to be the same one.
+         */
+        private fun loggedTx(
+            chatId: Long,
+            txId: String,
+            household: Household,
+            storedCategory: Category?,
+            logMessageId: Long = 900L,
+            status: TransactionStatus = TransactionStatus.EXECUTED,
+        ): Transaction {
+            val transaction = tx(id = txId, householdId = household.id, description = "SPORTZAL OLIMP")
+            every { telegramLogMessageRepository.findByChatAndMessage(chatId, logMessageId) } returns
+                logRow(household.id, chatId, logMessageId, txId)
+            every { transactionRepository.get(txId) } returns Optional.of(transaction)
+            every { transactionStatusRepository.findByTransactionId(txId) } returns status
+            every { transactionStatusRepository.findCategoryId(txId) } returns storedCategory?.id
+            storedCategory?.let { every { categoryRepository.findById(it.id) } returns it }
+            every { gateway.send(chatId, any(), any(), any()) } returns 950L
+            every { undoCategorizationUseCase(any(), any()) } returns true
+            return transaction
+        }
+
+        @Test
+        fun `a transaction still awaiting its first decision is left untouched`() {
+            val chatId = 12001L
+            val household = registerUser(chatId).second
+            loggedTx(chatId, "tx-R1", household, storedCategory = null, status = TransactionStatus.PENDING_APPROVAL)
+
+            feed(textUpdate(chatId, "Удалить", messageId = 10, replyTo = botReplyPrompt(900)))
+
+            verify(exactly = 0) { undoCategorizationUseCase(any(), any()) }
+            verify(exactly = 0) { handleOtherExpensesUseCase(any()) }
+        }
+
+        @Test
+        fun `stored category is subtracted and the transaction goes back through the normal flow`() {
+            val chatId = 12002L
+            val household = registerUser(chatId).second
+            val wrong = category(household.id, "Досуг")
+            val transaction = loggedTx(chatId, "tx-R2", household, storedCategory = wrong)
+            every { categorizeExpenseUseCase.explain(household.id, transaction) } returns null
+
+            feed(textUpdate(chatId, "Удалить", messageId = 10, replyTo = botReplyPrompt(900)))
+
+            verify(exactly = 1) { undoCategorizationUseCase(transaction, wrong.id) }
+            verify(exactly = 1) { handleOtherExpensesUseCase(listOf(transaction)) }
+        }
+
+        @Test
+        fun `an ignored transaction skips the subtraction but is still asked again`() {
+            val chatId = 12003L
+            val household = registerUser(chatId).second
+            val transaction = loggedTx(
+                chatId,
+                "tx-R3",
+                household,
+                storedCategory = null,
+                status = TransactionStatus.IGNORED,
+            )
+
+            feed(textUpdate(chatId, "Удалить", messageId = 10, replyTo = botReplyPrompt(900)))
+
+            verify(exactly = 0) { undoCategorizationUseCase(any(), any()) }
+            verify(exactly = 1) { handleOtherExpensesUseCase(listOf(transaction)) }
+        }
+
+        @Test
+        fun `a sheet failure stops before the transaction is asked again`() {
+            val chatId = 12004L
+            val household = registerUser(chatId).second
+            val wrong = category(household.id, "Досуг")
+            loggedTx(chatId, "tx-R4", household, storedCategory = wrong)
+            every { undoCategorizationUseCase(any(), any()) } throws RuntimeException("Sheets 503")
+
+            feed(textUpdate(chatId, "Удалить", messageId = 10, replyTo = botReplyPrompt(900)))
+
+            // Nothing re-prompted: the sheet and the stored status must stay consistent.
+            verify(exactly = 0) { handleOtherExpensesUseCase(any()) }
+        }
+
+        @Test
+        fun `the keyword that caused the match is offered for removal before asking again`() {
+            val chatId = 12005L
+            val household = registerUser(chatId).second
+            val wrong = category(household.id, "Досуг")
+            val transaction = loggedTx(chatId, "tx-R5", household, storedCategory = wrong)
+            every { categorizeExpenseUseCase.explain(household.id, transaction) } returns
+                CategorizeExpenseUseCase.Explanation(wrong, "\\Qспорт\\E", fromCode = false)
+
+            feed(textUpdate(chatId, "Удалить", messageId = 10, replyTo = botReplyPrompt(900)))
+
+            // The transaction goes back into the normal flow straight away; the keyword question
+            // is an independent follow-up, so leaving it unanswered strands nothing.
+            verify(exactly = 1) { undoCategorizationUseCase(transaction, wrong.id) }
+            verify(exactly = 1) { handleOtherExpensesUseCase(listOf(transaction)) }
+            verify(atLeast = 1) { gateway.send(chatId, any(), match { it != null }, any()) }
+        }
+
+        @Test
+        fun `the stored category is cleared before the keyword question, so a second Удалить cannot subtract twice`() {
+            val chatId = 12010L
+            val household = registerUser(chatId).second
+            val wrong = category(household.id, "Досуг")
+            val transaction = loggedTx(chatId, "tx-R10", household, storedCategory = wrong)
+            every { categorizeExpenseUseCase.explain(household.id, transaction) } returns
+                CategorizeExpenseUseCase.Explanation(wrong, "\\Qспорт\\E", fromCode = false)
+
+            feed(textUpdate(chatId, "Удалить", messageId = 10, replyTo = botReplyPrompt(900)))
+
+            verify(exactly = 1) {
+                transactionStatusRepository.save(mapOf("tx-R10" to TransactionStatus.PENDING_APPROVAL))
+            }
+
+            // Second attempt while the keyword prompt is still open: the status now says the
+            // transaction is awaiting a decision, so nothing is subtracted again.
+            every { transactionStatusRepository.findByTransactionId("tx-R10") } returns
+                TransactionStatus.PENDING_APPROVAL
+            feed(textUpdate(chatId, "Удалить", messageId = 11, replyTo = botReplyPrompt(900)))
+
+            verify(exactly = 1) { undoCategorizationUseCase(any(), any()) }
+        }
+
+        @Test
+        fun `confirming removal drops the keyword and then asks again`() {
+            val chatId = 12006L
+            val household = registerUser(chatId).second
+            val wrong = category(household.id, "Досуг")
+            val transaction = loggedTx(chatId, "tx-R6", household, storedCategory = wrong)
+            every { categorizeExpenseUseCase.explain(household.id, transaction) } returns
+                CategorizeExpenseUseCase.Explanation(wrong, "\\Qспорт\\E", fromCode = false)
+            every { removeKeywordUseCase(wrong.id, "\\Qспорт\\E") } returns
+                RemoveKeywordUseCase.Result.Removed(wrong, "\\Qспорт\\E")
+
+            feed(textUpdate(chatId, "Удалить", messageId = 10, replyTo = botReplyPrompt(900)))
+            feed(callbackUpdate(chatId, data = "rxk|tx-R6|1", attachedMessageId = 950))
+
+            verify(exactly = 1) { removeKeywordUseCase(wrong.id, "\\Qспорт\\E") }
+            verify(exactly = 1) { gateway.editKeyboard(chatId, 950L, null) }
+            verify(exactly = 1) { handleOtherExpensesUseCase(listOf(transaction)) }
+        }
+
+        @Test
+        fun `declining removal keeps the keyword and still asks again`() {
+            val chatId = 12007L
+            val household = registerUser(chatId).second
+            val wrong = category(household.id, "Досуг")
+            val transaction = loggedTx(chatId, "tx-R7", household, storedCategory = wrong)
+            every { categorizeExpenseUseCase.explain(household.id, transaction) } returns
+                CategorizeExpenseUseCase.Explanation(wrong, "\\Qспорт\\E", fromCode = false)
+
+            feed(textUpdate(chatId, "Удалить", messageId = 10, replyTo = botReplyPrompt(900)))
+            feed(callbackUpdate(chatId, data = "rxk|tx-R7|0", attachedMessageId = 950))
+
+            verify(exactly = 0) { removeKeywordUseCase(any(), any()) }
+            verify(exactly = 1) { handleOtherExpensesUseCase(listOf(transaction)) }
+        }
+
+        @Test
+        fun `a code-side rule is reported rather than removed`() {
+            val chatId = 12008L
+            val household = registerUser(chatId).second
+            val wrong = category(household.id, "Кафе")
+            val transaction = loggedTx(chatId, "tx-R8", household, storedCategory = wrong)
+            every { categorizeExpenseUseCase.explain(household.id, transaction) } returns
+                CategorizeExpenseUseCase.Explanation(wrong, "БРСМ-Нафта", fromCode = true)
+
+            feed(textUpdate(chatId, "Удалить", messageId = 10, replyTo = botReplyPrompt(900)))
+
+            verify(exactly = 0) { removeKeywordUseCase(any(), any()) }
+            verify(exactly = 1) { handleOtherExpensesUseCase(listOf(transaction)) }
+        }
+
+        @Test
+        fun `a transaction executed before V11 asks which category to subtract from`() {
+            val chatId = 12009L
+            val household = registerUser(chatId).second
+            val old = category(household.id, "Досуг")
+            val transaction = loggedTx(chatId, "tx-R9", household, storedCategory = null)
+            every { categoryRepository.findAll(household.id) } returns listOf(old)
+            every { categoryRepository.findById(old.id) } returns old
+            every { categorizeExpenseUseCase.explain(household.id, transaction) } returns null
+
+            // Step 1: nothing is subtracted yet — the bot has to ask where the money went.
+            feed(textUpdate(chatId, "Удалить", messageId = 10, replyTo = botReplyPrompt(900)))
+            verify(exactly = 0) { undoCategorizationUseCase(any(), any()) }
+            verify(atLeast = 1) { gateway.send(chatId, any(), match { it != null }, any()) }
+
+            // Step 2: the answer drives the same undo path a stored category would have.
+            feed(callbackUpdate(chatId, data = "rxo|tx-R9|${old.id}", attachedMessageId = 950))
+            verify(exactly = 1) { undoCategorizationUseCase(transaction, old.id) }
+            verify(exactly = 1) { handleOtherExpensesUseCase(listOf(transaction)) }
         }
     }
 

@@ -37,7 +37,9 @@ class HandleTelegramResponseUseCase(
                 ),
             )
 
-            transactionStatusRepository.save(mapOf(transactionId to TransactionStatus.EXECUTED))
+            // Store the category with the EXECUTED status: that link is what lets a later
+            // «Удалить» subtract this amount from the right sheet row.
+            transactionStatusRepository.saveExecuted(mapOf(transactionId to decision.categoryId))
         }
     }
 }

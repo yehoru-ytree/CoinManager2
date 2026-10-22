@@ -6,10 +6,14 @@ import MailAggregator.MailAggregator.bank.repository.TransactionStatusRepository
 import MailAggregator.MailAggregator.common.repository.CategoryRepository
 import MailAggregator.MailAggregator.common.usecases.AddCashTransactionUseCase
 import MailAggregator.MailAggregator.common.usecases.AddCategoryUseCase
+import MailAggregator.MailAggregator.common.usecases.CategorizeExpenseUseCase
+import MailAggregator.MailAggregator.common.usecases.HandleOtherExpensesUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramCommentUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramResponseUseCase
 import MailAggregator.MailAggregator.common.usecases.RemoveCategoryUseCase
+import MailAggregator.MailAggregator.common.usecases.RemoveKeywordUseCase
 import MailAggregator.MailAggregator.common.usecases.SaveKeywordUseCase
+import MailAggregator.MailAggregator.common.usecases.UndoCategorizationUseCase
 import MailAggregator.MailAggregator.household.repository.HouseholdRepository
 import MailAggregator.MailAggregator.household.repository.InviteTokenRepository
 import MailAggregator.MailAggregator.household.usecase.AddBankAccountUseCase
@@ -22,6 +26,7 @@ import MailAggregator.MailAggregator.telegram.wizard.AddCardWizard
 import MailAggregator.MailAggregator.telegram.wizard.AddCategoryWizard
 import MailAggregator.MailAggregator.telegram.wizard.CashEntryWizard
 import MailAggregator.MailAggregator.telegram.wizard.CreateHouseholdWizard
+import MailAggregator.MailAggregator.telegram.wizard.RecategorizeWizard
 import MailAggregator.MailAggregator.telegram.wizard.RemoveCategoryWizard
 import MailAggregator.MailAggregator.telegram.wizard.Wizard
 import org.springframework.beans.factory.annotation.Value
@@ -139,6 +144,34 @@ class TelegramConfig {
         messageSource = messageSource,
         zoneId = Config.TIME_ZONE,
         promptHousehold = categorizationBot::promptHousehold,
+    )
+
+    // Starts from a reply («Удалить») rather than a plain message, so it can sit last among the
+    // wizards: no other start trigger can collide with it.
+    @Bean
+    @Order(6)
+    fun recategorizeWizard(
+        telegramGateway: TelegramGateway,
+        transactionRepository: TransactionRepository,
+        transactionStatusRepository: TransactionStatusRepository,
+        telegramLogMessageRepository: TelegramLogMessageRepository,
+        categoryRepository: CategoryRepository,
+        categorizeExpenseUseCase: CategorizeExpenseUseCase,
+        undoCategorizationUseCase: UndoCategorizationUseCase,
+        removeKeywordUseCase: RemoveKeywordUseCase,
+        handleOtherExpensesUseCase: HandleOtherExpensesUseCase,
+        messageSource: MessageSource,
+    ) = RecategorizeWizard(
+        gateway = telegramGateway,
+        transactionRepository = transactionRepository,
+        transactionStatusRepository = transactionStatusRepository,
+        telegramLogMessageRepository = telegramLogMessageRepository,
+        categoryRepository = categoryRepository,
+        categorizeExpenseUseCase = categorizeExpenseUseCase,
+        undoCategorizationUseCase = undoCategorizationUseCase,
+        removeKeywordUseCase = removeKeywordUseCase,
+        handleOtherExpensesUseCase = handleOtherExpensesUseCase,
+        messageSource = messageSource,
     )
 
     @Bean

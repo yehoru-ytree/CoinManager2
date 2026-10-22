@@ -15,8 +15,10 @@ import MailAggregator.MailAggregator.common.usecases.HandleOtherExpensesUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramCommentUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleTelegramResponseUseCase
 import MailAggregator.MailAggregator.common.usecases.RemoveCategoryUseCase
+import MailAggregator.MailAggregator.common.usecases.RemoveKeywordUseCase
 import MailAggregator.MailAggregator.common.usecases.SaveKeywordUseCase
 import MailAggregator.MailAggregator.common.usecases.SeedDefaultCategoriesUseCase
+import MailAggregator.MailAggregator.common.usecases.UndoCategorizationUseCase
 import MailAggregator.MailAggregator.household.repository.HouseholdRepository
 import MailAggregator.MailAggregator.household.repository.InviteTokenRepository
 import MailAggregator.MailAggregator.household.usecase.AddBankAccountUseCase
@@ -184,6 +186,22 @@ class Config(
         categoryRepository: CategoryRepository,
     ) = SaveKeywordUseCase(
         categoryRepository = categoryRepository,
+    )
+
+    @Bean
+    fun removeKeywordUseCase(
+        categoryRepository: CategoryRepository,
+    ) = RemoveKeywordUseCase(
+        categoryRepository = categoryRepository,
+    )
+
+    @Bean
+    fun undoCategorizationUseCase(
+        mergeSpendingsByDateUseCase: MergeSpendingsByDateUseCase,
+        householdRepository: HouseholdRepository,
+    ) = UndoCategorizationUseCase(
+        mergeSpendingsByDateUseCase = mergeSpendingsByDateUseCase,
+        householdRepository = householdRepository,
     )
 
     @Bean
