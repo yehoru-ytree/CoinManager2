@@ -1736,6 +1736,20 @@ class CategorizationBotTest {
         }
 
         @Test
+        fun `REPRO lowercase удалить on an auto-categorised log must not be saved as a comment`() {
+            val chatId = 12100L
+            val household = registerUser(chatId).second
+            val wrong = category(household.id, "Досуг")
+            val transaction = loggedTx(chatId, "tx-REPRO", household, storedCategory = wrong)
+            every { categorizeExpenseUseCase.explain(household.id, transaction) } returns null
+
+            feed(textUpdate(chatId, "удалить", messageId = 10, replyTo = botReplyPrompt(900)))
+
+            verify(exactly = 0) { handleTelegramCommentUseCase(any(), any(), any()) }
+            verify(exactly = 1) { undoCategorizationUseCase(transaction, wrong.id) }
+        }
+
+        @Test
         fun `a transaction still awaiting its first decision is left untouched`() {
             val chatId = 12001L
             val household = registerUser(chatId).second
