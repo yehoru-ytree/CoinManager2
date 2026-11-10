@@ -42,6 +42,7 @@ import MailAggregator.MailAggregator.telegram.wizard.RemoveCategoryWizard
 import com.pengrad.telegrambot.model.CallbackQuery
 import com.pengrad.telegrambot.model.Message
 import com.pengrad.telegrambot.model.Update
+import com.pengrad.telegrambot.model.request.InlineKeyboardMarkup
 import io.mockk.Runs
 import io.mockk.every
 import io.mockk.just
@@ -1443,6 +1444,35 @@ class CategorizationBotTest {
         }
 
         @Test
+        fun `cash categorisation keyboard fits Telegram's 64-byte callback_data limit`() {
+            val chatId = 9008L
+            val (_, household) = registerUser(chatId)
+            // A cash id as the real use case generates it, plus real category ids (UUIDs) — the
+            // combination that used to produce 80-byte callbacks and get the whole prompt rejected.
+            val cashId = AddCashTransactionUseCase(mockk(relaxed = true), mockk(relaxed = true)).add(household.id, 42.0).id
+            every { categoryRepository.findAll(household.id) } returns listOf(
+                category(UUID.randomUUID(), "Food").copy(householdId = household.id, sheetRow = 1),
+                category(UUID.randomUUID(), "Other").copy(householdId = household.id, isOther = true, sheetRow = 999),
+            )
+            every { householdRepository.findUsersInHousehold(household.id) } returns listOf(botUser(chatId, household.id))
+            val keyboard = slot<InlineKeyboardMarkup>()
+            every { gateway.send(chatId = chatId, text = any(), keyboard = capture(keyboard), replyToMessageId = any()) } returns 500L
+            every { gateway.send(chatId = chatId, text = any(), keyboard = null, replyToMessageId = any()) } returnsMany listOf(400L, 401L)
+            every { addCashTransactionUseCase.add(household.id, 42.0) } returns tx(id = cashId, householdId = household.id)
+
+            feed(textUpdate(chatId, "Наличка", messageId = 1))
+            feed(textUpdate(chatId, "42", messageId = 2, replyTo = botReplyPrompt(400)))
+
+            val callbacks = keyboard.captured.inlineKeyboard().flatten().map { it.callbackData.orEmpty() }
+            assert(callbacks.isNotEmpty())
+            callbacks.forEach {
+                assert(it.toByteArray(Charsets.UTF_8).size <= CallbackIds.MAX_CALLBACK_DATA_BYTES) {
+                    "callback_data too long (${it.length}): $it"
+                }
+            }
+        }
+
+        @Test
         fun `use case exception clears state and reports cash_failed`() {
             val chatId = 9007L
             val (_, household) = registerUser(chatId)
@@ -1510,6 +1540,23 @@ class CategorizationBotTest {
             verify(exactly = 1) { gateway.editKeyboard(chatId, 500L, null) }
             verify(exactly = 1) { gateway.editKeyboard(10099L, 501L, null) }
             verify(exactly = 1) { gateway.answerCallback("cb-700", any()) }
+        }
+
+        @Test
+        fun `compact-encoded categoryId dispatches Decision Category`() {
+            val chatId = 10010L
+            val (_, household) = registerUser(chatId)
+            val chosen = category(UUID.randomUUID(), "Food").copy(householdId = household.id)
+            every { transactionStatusRepository.findByTransactionId("cash-x") } returns null
+            every { categoryRepository.findById(chosen.id) } returns chosen
+            every { telegramLogMessageRepository.findAllByTransactionId("cash-x") } returns emptyList()
+            every { transactionRepository.get("cash-x") } returns Optional.of(tx(id = "cash-x", householdId = household.id))
+            every { householdRepository.findHousehold(household.id) } returns household
+            every { householdRepository.findUsersInHousehold(household.id) } returns emptyList()
+
+            feed(callbackUpdate(chatId, data = "c|cash-x|${CallbackIds.encode(chosen.id)}", attachedMessageId = 700))
+
+            verify(exactly = 1) { onDecision("cash-x", CategorizationBot.Decision.Category(chosen.id)) }
         }
 
         @Test

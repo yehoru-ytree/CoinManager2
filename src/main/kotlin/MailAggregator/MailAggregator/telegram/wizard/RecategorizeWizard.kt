@@ -10,6 +10,7 @@ import MailAggregator.MailAggregator.common.usecases.CategorizeExpenseUseCase
 import MailAggregator.MailAggregator.common.usecases.HandleOtherExpensesUseCase
 import MailAggregator.MailAggregator.common.usecases.RemoveKeywordUseCase
 import MailAggregator.MailAggregator.common.usecases.UndoCategorizationUseCase
+import MailAggregator.MailAggregator.telegram.CallbackIds
 import MailAggregator.MailAggregator.telegram.TelegramGateway
 import MailAggregator.MailAggregator.telegram.repository.TelegramLogMessageRepository
 import com.pengrad.telegrambot.model.Message
@@ -155,7 +156,7 @@ class RecategorizeWizard(
             return
         }
         val tx = transactionRepository.get(parts[1]).orElse(null)
-        val categoryId = runCatching { UUID.fromString(parts[2]) }.getOrNull()
+        val categoryId = CallbackIds.decode(parts[2])
         val category = categoryId?.let { categoryRepository.findById(it) }
         if (tx == null ||
             category == null ||
@@ -314,7 +315,7 @@ class RecategorizeWizard(
     private fun categoryKeyboard(transactionId: String, categories: List<Category>): InlineKeyboardMarkup {
         val rows = categories.chunked(3).map { chunk ->
             chunk.map { cat ->
-                InlineKeyboardButton(cat.displayName).callbackData("$OLD_CATEGORY_PREFIX|$transactionId|${cat.id}")
+                InlineKeyboardButton(cat.displayName).callbackData("$OLD_CATEGORY_PREFIX|$transactionId|${CallbackIds.encode(cat.id)}")
             }.toTypedArray()
         }
         return InlineKeyboardMarkup(*rows.toTypedArray())

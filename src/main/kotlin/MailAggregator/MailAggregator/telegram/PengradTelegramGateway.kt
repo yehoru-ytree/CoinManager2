@@ -6,19 +6,31 @@ import com.pengrad.telegrambot.model.Update
 import com.pengrad.telegrambot.model.request.InlineKeyboardMarkup
 import com.pengrad.telegrambot.model.request.ReplyParameters
 import com.pengrad.telegrambot.request.AnswerCallbackQuery
+import com.pengrad.telegrambot.request.BaseRequest
 import com.pengrad.telegrambot.request.EditMessageReplyMarkup
 import com.pengrad.telegrambot.request.SendMessage
+import com.pengrad.telegrambot.response.BaseResponse
+import org.slf4j.LoggerFactory
 
 class PengradTelegramGateway(token: String) : TelegramGateway {
+    private val log = LoggerFactory.getLogger(PengradTelegramGateway::class.java)
     private val bot = TelegramBot(token)
 
     override fun start(onUpdate: (Update) -> Unit) {
         bot.setUpdatesListener(
             { updates ->
-                updates.forEach { onUpdate(it) }
+                updates.forEach { update ->
+                    // One bad update must not take the rest of the batch down with it, and must
+                    // leave a trace — otherwise the user just sees the bot go quiet.
+                    try {
+                        onUpdate(update)
+                    } catch (e: Exception) {
+                        log.error("Failed to handle Telegram update {}", update.updateId(), e)
+                    }
+                }
                 UpdatesListener.CONFIRMED_UPDATES_ALL
             },
-            { /* log e.response()?.description() / network errors */ },
+            { e -> log.warn("Telegram long-polling error: {}", e.response()?.description() ?: e.message, e) },
         )
     }
 
@@ -31,18 +43,36 @@ class PengradTelegramGateway(token: String) : TelegramGateway {
         val request = SendMessage(chatId, text)
         keyboard?.let(request::replyMarkup)
         replyToMessageId?.let { request.replyParameters(ReplyParameters(it)) }
-        return bot.execute(request)?.message()?.messageId()?.toLong()
+        return execute(request, "sendMessage chat=$chatId")?.message()?.messageId()?.toLong()
     }
 
     override fun editKeyboard(chatId: Long, messageId: Long, keyboard: InlineKeyboardMarkup?) {
         val request = EditMessageReplyMarkup(chatId, messageId.toInt())
         keyboard?.let(request::replyMarkup)
-        bot.execute(request)
+        execute(request, "editMessageReplyMarkup chat=$chatId msg=$messageId")
     }
 
     override fun answerCallback(callbackQueryId: String, text: String?) {
         val request = AnswerCallbackQuery(callbackQueryId)
         text?.let(request::text)
-        bot.execute(request)
+        execute(request, "answerCallbackQuery")
+    }
+
+    /**
+     * Telegram reports API-level failures (e.g. BUTTON_DATA_INVALID) as a response with `ok=false`,
+     * not an exception. Callers treat a `null` message id as "skip", so without this log a rejected
+     * message vanishes silently.
+     */
+    private fun <T : BaseRequest<T, R>, R : BaseResponse> execute(request: T, what: String): R? {
+        val response = bot.execute(request)
+        if (response == null || !response.isOk) {
+            log.warn(
+                "Telegram {} failed: {} {}",
+                what,
+                response?.errorCode(),
+                response?.description(),
+            )
+        }
+        return response
     }
 }
