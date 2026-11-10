@@ -283,14 +283,15 @@ class PlainCommandHandler(
             .sortedBy { it.sheetRow }
         val rows = regular.chunked(3).map { chunk ->
             chunk.map { cat ->
-                InlineKeyboardButton(cat.displayName).callbackData("k|$transactionId|${cat.id}")
+                InlineKeyboardButton(cat.displayName).callbackData("k|$transactionId|${CallbackIds.encode(cat.id)}")
             }.toTypedArray()
         }
         return InlineKeyboardMarkup(*rows.toTypedArray())
     }
 
     /**
-     * Callback shape: `c|<txId>|<categoryId>` or `c|<txId>|IGNORE`.
+     * Callback shape: `c|<txId>|<categoryId>` or `c|<txId>|IGNORE`, where categoryId is
+     * [CallbackIds]-encoded (old prompts may still carry the canonical 36-char form).
      *
      * We resolve by UUID so soft-deleted or renumbered categories in the current template still
      * resolve on an old prompt — the historical decision needs the right categoryId, not a
@@ -300,7 +301,7 @@ class PlainCommandHandler(
         val parts = data.split('|')
         if (parts.firstOrNull() != "c" || parts.size != 3) return null
         if (parts[2] == "IGNORE") return Parsed(parts[1], CategorizationBot.Decision.Ignore)
-        val categoryId = runCatching { UUID.fromString(parts[2]) }.getOrNull() ?: return null
+        val categoryId = CallbackIds.decode(parts[2]) ?: return null
         val category = categoryRepository.findById(categoryId) ?: return null
         if (category.householdId != householdId) return null
         return Parsed(parts[1], CategorizationBot.Decision.Category(category.id))
@@ -310,7 +311,7 @@ class PlainCommandHandler(
     private fun parseSaveKeywordCallback(householdId: UUID, data: String): SaveKeywordCallback? {
         val parts = data.split('|')
         if (parts.firstOrNull() != "k" || parts.size != 3) return null
-        val categoryId = runCatching { UUID.fromString(parts[2]) }.getOrNull() ?: return null
+        val categoryId = CallbackIds.decode(parts[2]) ?: return null
         val category = categoryRepository.findById(categoryId) ?: return null
         if (category.householdId != householdId) return null
         return SaveKeywordCallback(parts[1], category.id)
